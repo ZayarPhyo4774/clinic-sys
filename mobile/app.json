@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Clinic",
+    "slug": "clinic",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "clinicsys",
+    "userInterfaceStyle": "light",
+    "plugins": ["expo-router", "expo-secure-store", "expo-sqlite"],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "extra": {
+      "apiUrl": "http://127.0.0.1:8000/api/v1"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    }
+  }
+}
