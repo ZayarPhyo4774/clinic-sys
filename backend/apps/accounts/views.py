@@ -82,7 +82,13 @@ class MeView(APIView):
                 "access_block_reason": access_block_reason(user, requested_branch_id),
                 "resolved_branch_id": str(resolved_branch_id) if resolved_branch_id else None,
                 "assigned_branches": [
-                    {"id": str(row.id), "name": row.name, "code": row.code} for row in assigned
+                    {
+                        "id": str(row.id),
+                        "name": row.name,
+                        "code": row.code,
+                        "inventory_role": row.inventory_role,
+                    }
+                    for row in assigned
                 ],
             }
         )

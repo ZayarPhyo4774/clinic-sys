@@ -384,10 +384,10 @@ function RolesAdmin() {
         <Card className="border-primary/20 bg-primary/5 shadow-premium-sm">
           <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="font-semibold">Solo clinic setup</p>
+              <p className="font-semibold">Assign permissions</p>
               <p className="text-sm text-muted-foreground">
-                Assign <span className="font-medium text-foreground">{soloRole.name}</span> to your doctor&apos;s login
-                for register → consult → dispense → bill in one account.
+                Link each login to a role to grant module access. For one-doctor clinics, assign{" "}
+                <span className="font-medium text-foreground">{soloRole.name}</span> and add a Staff record for the doctor.
               </p>
             </div>
             <Button type="button" variant="outline" onClick={() => quickAssignRole(soloRole.id)}>

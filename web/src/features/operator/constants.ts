@@ -29,7 +29,7 @@ export const OPERATOR_SECTIONS: OperatorSection[] = [
   {
     id: "overview",
     label: "Overview",
-    description: "Platform status and solo-clinic setup progress.",
+    description: "Platform status and guided clinic setup.",
     icon: LayoutDashboard,
   },
   {
@@ -46,26 +46,26 @@ export const OPERATOR_SECTIONS: OperatorSection[] = [
   },
   {
     id: "access",
-    label: "Module access",
-    description: "Permission catalog and default roles.",
+    label: "Feature catalog & roles",
+    description: "Global permission catalog and per-clinic default role templates.",
     icon: KeyRound,
   },
   {
     id: "roles",
-    label: "Roles",
-    description: "Permission bundles assigned to staff.",
+    label: "Custom roles",
+    description: "Clinic-specific permission bundles beyond the default templates.",
     icon: Shield,
   },
   {
     id: "staff",
-    label: "Staff logins",
-    description: "Clinic user accounts (not operators).",
+    label: "Clinic logins",
+    description: "User accounts for clinic staff (not platform operators).",
     icon: Users,
   },
   {
     id: "assignments",
-    label: "Assignments",
-    description: "Connect users to roles and branches.",
+    label: "Role assignments",
+    description: "Grant permissions by linking logins to roles (optionally per branch).",
     icon: UserCog,
   },
 ];

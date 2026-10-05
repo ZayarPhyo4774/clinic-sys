@@ -41,6 +41,8 @@ class QueueEntry(models.Model):
     position = models.PositiveIntegerField()
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.WAITING)
     called_at = models.DateTimeField(null=True, blank=True)
+    triage_started_at = models.DateTimeField(null=True, blank=True)
+    vitals_recorded_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

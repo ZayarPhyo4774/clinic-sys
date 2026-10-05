@@ -12,12 +12,16 @@ from apps.appointments.views import audit, run_service, visible_rows
 from apps.clinics.scoping import parse_uuid
 from apps.queues.models import QueueEntry
 from apps.queues.serializers import QueueEntrySerializer
+from apps.audit.models import AuditEvent
+from apps.encounters.models import Encounter
+from apps.encounters.serializers import EncounterSerializer
 from apps.queues.services import (
     call_queue_entry,
     complete_consultation,
     requeue_entry,
     skip_queue_entry,
     start_consultation,
+    start_triage,
 )
 
 
@@ -36,12 +40,14 @@ class QueueEntryViewSet(viewsets.ReadOnlyModelViewSet):
         "complete": "appointments.update",
         "skip": "appointments.update",
         "requeue": "appointments.update",
+        "triage_start": "triage.start",
     }
 
     def get_queryset(self):
         queryset = visible_rows(
             QueueEntry.objects.select_related(
                 "appointment",
+                "appointment__encounter",
                 "clinic",
                 "branch",
                 "patient",
@@ -92,7 +98,28 @@ class QueueEntryViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None, **kwargs):
         self.get_object()
-        return self._act(request, pk, start_consultation, "queues.queue_started", "started")
+        entry = run_service(lambda: start_consultation(pk, user=request.user))
+        audit(request, entry, "queues.QueueEntry", "queues.queue_started", "started")
+        encounter = Encounter.objects.filter(appointment_id=entry.appointment_id).first()
+        if encounter is not None and not AuditEvent.objects.filter(
+            action="encounters.encounter_started",
+            entity_id=encounter.id,
+        ).exists():
+            audit(request, encounter, "encounters.Encounter", "encounters.encounter_started", "started")
+        return Response(QueueEntrySerializer(entry, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="triage/start")
+    def triage_start(self, request, pk=None, **kwargs):
+        self.get_object()
+        entry = run_service(lambda: start_triage(pk, request.user))
+        audit(request, entry, "queues.QueueEntry", "queues.triage_started", "started")
+        encounter = Encounter.objects.get(appointment_id=entry.appointment_id)
+        return Response(
+            {
+                "queue_entry": QueueEntrySerializer(entry, context={"request": request}).data,
+                "encounter": EncounterSerializer(encounter, context={"request": request}).data,
+            }
+        )
 
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None, **kwargs):

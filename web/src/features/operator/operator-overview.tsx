@@ -1,9 +1,14 @@
 "use client";
 
-import { ArrowRight, CircleCheck, CircleDashed } from "lucide-react";
+import { ArrowRight, CircleCheck, CircleDashed, Wand2 } from "lucide-react";
+import { useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ClinicSetupWizard } from "@/features/operator/clinic-setup-wizard";
 import { type OperatorSectionId } from "@/features/operator/constants";
+import { OperatorClinicBar } from "@/features/operator/operator-clinic-bar";
+import { useOperatorClinic } from "@/features/operator/operator-clinic-context";
 import { useOperatorSection } from "@/features/operator/operator-section-context";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +27,11 @@ export function OperatorOverview({
   roleCount,
   userCount,
   assignmentCount,
+  clinicBranchCount,
+  clinicRoleCount,
+  clinicUserCount,
+  clinicAssignmentCount,
+  clinicHasRoles,
 }: {
   clinicCount: number;
   branchCount: number;
@@ -29,51 +39,50 @@ export function OperatorOverview({
   roleCount: number;
   userCount: number;
   assignmentCount: number;
+  clinicBranchCount: number;
+  clinicRoleCount: number;
+  clinicUserCount: number;
+  clinicAssignmentCount: number;
+  clinicHasRoles: boolean;
 }) {
   const { navigate } = useOperatorSection();
+  const { selectedClinic } = useOperatorClinic();
+  const [wizardOpen, setWizardOpen] = useState(false);
+
+  const scoped = Boolean(selectedClinic);
+  const branches = scoped ? clinicBranchCount : branchCount;
+  const roles = scoped ? clinicRoleCount : roleCount;
+  const users = scoped ? clinicUserCount : userCount;
+  const assignments = scoped ? clinicAssignmentCount : assignmentCount;
 
   const steps: SetupStep[] = [
     {
       id: "clinic",
       label: "Create a clinic",
-      detail: "Define the organization boundary.",
+      detail: "Organization boundary; default roles install automatically.",
       done: clinicCount > 0,
       section: "clinics",
     },
     {
       id: "branch",
       label: "Add a branch",
-      detail: "At least one site for patient records.",
-      done: branchCount > 0,
+      detail: "At least one site for patient records and staff.",
+      done: branches > 0,
       section: "branches",
     },
     {
-      id: "access",
-      label: "Install module access",
-      detail: "Load permission codes into the catalog.",
-      done: permissionCount > 0,
+      id: "features",
+      label: "Enable features & default roles",
+      detail: "Permission catalog plus Solo Practitioner, Receptionist, etc.",
+      done: permissionCount > 0 && (scoped ? clinicHasRoles : roleCount > 0),
       section: "access",
     },
     {
-      id: "roles",
-      label: "Install default roles",
-      detail: "Includes Solo Practitioner for one-doctor clinics.",
-      done: roleCount > 0,
-      section: "access",
-    },
-    {
-      id: "staff",
-      label: "Create staff login",
-      detail: "Doctor or receptionist email + password.",
-      done: userCount > 0,
+      id: "person",
+      label: "Add first person",
+      detail: "One step: login + role (+ optional Staff record for clinical roles).",
+      done: users > 0 && assignments > 0,
       section: "staff",
-    },
-    {
-      id: "assign",
-      label: "Assign a role",
-      detail: "Grant Solo Practitioner or another role.",
-      done: assignmentCount > 0,
-      section: "assignments",
     },
   ];
 
@@ -82,15 +91,32 @@ export function OperatorOverview({
 
   const stats: Array<{ label: string; value: number; section: OperatorSectionId }> = [
     { label: "Clinics", value: clinicCount, section: "clinics" },
-    { label: "Branches", value: branchCount, section: "branches" },
+    { label: scoped ? "Branches (clinic)" : "Branches", value: branches, section: "branches" },
     { label: "Permissions", value: permissionCount, section: "access" },
-    { label: "Roles", value: roleCount, section: "roles" },
-    { label: "Staff", value: userCount, section: "staff" },
-    { label: "Assignments", value: assignmentCount, section: "assignments" },
+    { label: scoped ? "Roles (clinic)" : "Roles", value: roles, section: "roles" },
+    { label: scoped ? "Logins (clinic)" : "Logins", value: users, section: "staff" },
+    { label: scoped ? "Assignments (clinic)" : "Assignments", value: assignments, section: "assignments" },
   ];
 
   return (
     <div className="space-y-6">
+      <OperatorClinicBar description="Setup checklist below reflects the selected clinic where noted." />
+
+      <Card className="border-primary/20 bg-primary/5 shadow-premium-sm">
+        <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-semibold">Guided clinic setup</p>
+            <p className="text-sm text-muted-foreground">
+              Run the wizard to add a branch, confirm default roles, and provision the first login in one flow.
+            </p>
+          </div>
+          <Button type="button" onClick={() => setWizardOpen(true)} disabled={clinicCount === 0}>
+            <Wand2 className="size-4" aria-hidden="true" />
+            Open setup wizard
+          </Button>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {stats.map((stat) => (
           <button
@@ -116,11 +142,11 @@ export function OperatorOverview({
 
       <Card className={cn(ready ? "border-success/30 bg-success/5" : "border-primary/15")}>
         <CardHeader>
-          <CardTitle>Solo clinic setup</CardTitle>
+          <CardTitle>{selectedClinic ? `${selectedClinic.name} setup` : "Platform setup"}</CardTitle>
           <CardDescription>
             {ready
-              ? "Provisioning complete. The doctor can sign in at the clinic workspace."
-              : `${completed} of ${steps.length} steps done — follow the checklist below.`}
+              ? "Provisioning complete. Clinic users can sign in at the clinic workspace."
+              : `${completed} of ${steps.length} steps done — use the wizard or follow the checklist.`}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -151,6 +177,8 @@ export function OperatorOverview({
           </ol>
         </CardContent>
       </Card>
+
+      <ClinicSetupWizard open={wizardOpen} onOpenChange={setWizardOpen} />
     </div>
   );
 }

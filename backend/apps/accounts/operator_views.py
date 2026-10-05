@@ -9,6 +9,12 @@ from rest_framework.views import APIView
 
 from apps.accounts.default_roles import ensure_permission_catalog, install_default_roles, preview_default_roles
 from apps.accounts.models import Permission, Role, User, UserRole
+from apps.accounts.operator_provision import (
+    CLINICAL_ROLE_CODES,
+    clinic_setup_status,
+    ensure_clinic_defaults,
+    provision_clinic_person,
+)
 from apps.audit.services import client_ip, record_audit_event
 from apps.clinics.models import Branch, Clinic
 from apps.patients.models import Patient
@@ -83,21 +89,41 @@ class OperatorClinicView(APIView):
             created_by=request.user,
         )
         try:
-            clinic.save()
+            with transaction.atomic():
+                clinic.save()
+                bootstrap = ensure_clinic_defaults(clinic)
         except DjangoValidationError as exc:
             raise _validation(exc) from exc
         _audit(request, clinic, "clinics.Clinic", "operator.clinic_created")
-        return Response({"id": str(clinic.id), "name": clinic.name, "code": clinic.code}, status=201)
+        record_audit_event(
+            actor=request.user,
+            action="operator.default_roles_installed",
+            entity_type="accounts.Role",
+            clinic=clinic,
+            ip_address=client_ip(request),
+            metadata={"result": "created", "source": "clinic_create", **bootstrap},
+        )
+        return Response(
+            {
+                "id": str(clinic.id),
+                "name": clinic.name,
+                "code": clinic.code,
+                "bootstrap": bootstrap,
+                "setup": clinic_setup_status(clinic.id),
+            },
+            status=201,
+        )
 
 
 class OperatorBranchView(APIView):
     permission_classes = [OperatorPermission]
 
     def get(self, request, **kwargs):
-        rows = Branch.objects.select_related("clinic").order_by("name")[:200]
+        rows = Branch.objects.select_related("clinic").order_by("name")
         clinic_id = request.query_params.get("clinic")
         if clinic_id:
             rows = rows.filter(clinic_id=clinic_id)
+        rows = rows[:200]
         return Response(
             {
                 "results": [
@@ -204,7 +230,11 @@ class OperatorRoleView(APIView):
     permission_classes = [OperatorPermission]
 
     def get(self, request, **kwargs):
-        rows = Role.objects.prefetch_related("permissions").order_by("name")[:200]
+        rows = Role.objects.prefetch_related("permissions").order_by("name")
+        clinic_id = request.query_params.get("clinic")
+        if clinic_id:
+            rows = rows.filter(clinic_id=clinic_id)
+        rows = rows[:200]
         return Response(
             {
                 "results": [
@@ -245,7 +275,11 @@ class OperatorUserView(APIView):
     permission_classes = [OperatorPermission]
 
     def get(self, request, **kwargs):
-        rows = User.objects.select_related("clinic").order_by("email")[:200]
+        rows = User.objects.select_related("clinic").order_by("email")
+        clinic_id = request.query_params.get("clinic")
+        if clinic_id:
+            rows = rows.filter(clinic_id=clinic_id)
+        rows = rows[:200]
         return Response(
             {
                 "results": [
@@ -301,7 +335,11 @@ class OperatorAssignmentView(APIView):
     permission_classes = [OperatorPermission]
 
     def get(self, request, **kwargs):
-        rows = UserRole.objects.select_related("user", "role", "branch").order_by("-created_at")[:200]
+        rows = UserRole.objects.select_related("user", "role", "branch").order_by("-created_at")
+        clinic_id = request.query_params.get("clinic")
+        if clinic_id:
+            rows = rows.filter(user__clinic_id=clinic_id)
+        rows = rows[:200]
         return Response(
             {
                 "results": [
@@ -311,6 +349,7 @@ class OperatorAssignmentView(APIView):
                         "user_email": row.user.email,
                         "role_id": str(row.role_id),
                         "role_name": row.role.name,
+                        "role_code": row.role.code,
                         "branch_id": str(row.branch_id) if row.branch_id else None,
                         "branch_name": row.branch.name if row.branch_id else None,
                     }
@@ -334,7 +373,64 @@ class OperatorAssignmentView(APIView):
         except IntegrityError as exc:
             raise DRFValidationError({"role": "This role is already assigned."}) from exc
         _audit(request, assignment, "accounts.UserRole", "operator.role_assigned")
-        return Response({"id": str(assignment.id)}, status=201)
+        return Response(
+            {
+                "id": str(assignment.id),
+                "role_code": role.code,
+                "is_clinical_role": role.code in CLINICAL_ROLE_CODES,
+            },
+            status=201,
+        )
+
+
+class OperatorClinicSetupView(APIView):
+    permission_classes = [OperatorPermission]
+
+    def get(self, request, clinic_id, **kwargs):
+        clinic = get_object_or_404(Clinic, pk=clinic_id)
+        return Response(clinic_setup_status(clinic.id))
+
+
+class OperatorClinicPersonView(APIView):
+    permission_classes = [OperatorPermission]
+
+    def post(self, request, clinic_id, **kwargs):
+        clinic = get_object_or_404(Clinic, pk=clinic_id)
+        try:
+            result = provision_clinic_person(
+                clinic,
+                email=request.data.get("email") or "",
+                full_name=request.data.get("full_name") or "",
+                password=request.data.get("password") or "",
+                role_code=request.data.get("role_code") or "",
+                branch_id=request.data.get("branch") or None,
+                create_staff=bool(request.data.get("create_staff", False)),
+                staff_type=request.data.get("staff_type") or None,
+                created_by=request.user,
+            )
+        except DjangoValidationError as exc:
+            raise _validation(exc) from exc
+
+        user = get_object_or_404(User, pk=result["user_id"])
+        _audit(request, user, "accounts.User", "operator.user_created")
+        assignment = get_object_or_404(UserRole, pk=result["assignment_id"])
+        _audit(request, assignment, "accounts.UserRole", "operator.role_assigned")
+        if result["staff_created"]:
+            from apps.clinics.models import Staff
+
+            staff = get_object_or_404(Staff, pk=result["staff_id"])
+            record_audit_event(
+                actor=request.user,
+                action="operator.staff_created",
+                entity_type="clinics.Staff",
+                entity_id=staff.id,
+                clinic=clinic,
+                branch=staff.branch,
+                ip_address=client_ip(request),
+                metadata={"result": "created", "source": "provision_person"},
+            )
+
+        return Response(result, status=201)
 
 
 class OperatorClinicDetailView(APIView):

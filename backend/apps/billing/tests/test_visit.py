@@ -21,6 +21,8 @@ VISIT = (
     "appointments.update",
     "encounters.view",
     "encounters.create",
+    "vitals.record",
+    "triage.start",
     "prescriptions.view",
     "prescriptions.create",
     "pharmacy.view",
@@ -72,21 +74,9 @@ def walk_visit(api, clinic, branch, user, *, pay=True, interrupt_sync=False):
     queued = api.post(f"/api/v1/appointments/{appointment_id}/queue/", **header)
     assert queued.status_code == 201, queued.data
     entry_id = queued.data["id"]
-    assert api.post(f"/api/v1/queue-entries/{entry_id}/call/", **header).status_code == 200
-    started_queue = api.post(f"/api/v1/queue-entries/{entry_id}/start/", **header)
-    assert started_queue.status_code == 200, started_queue.data
-
-    opened = start(api, appointment_id)
-    assert opened.status_code == 201, opened.data
-    encounter_id = opened.data["id"]
-    assert opened.data["status"] == "open"
-    note = api.post(
-        f"/api/v1/encounters/{encounter_id}/notes/",
-        {"body": "Sore throat since yesterday."},
-        format="json",
-        **header,
-    )
-    assert note.status_code == 201, note.data
+    triage = api.post(f"/api/v1/queue-entries/{entry_id}/triage/start/", **header)
+    assert triage.status_code == 200, triage.data
+    encounter_id = triage.data["encounter"]["id"]
 
     if interrupt_sync:
         operation = {
@@ -99,8 +89,9 @@ def walk_visit(api, clinic, branch, user, *, pay=True, interrupt_sync=False):
             "entity_id": None,
             "operation": "create",
             "payload": {"encounter": encounter_id, "temperature": "37.2", "pulse": 80},
-            "created_at": (timezone.now() - timedelta(minutes=2)).isoformat(),
+            "created_at": timezone.now().isoformat(),
         }
+        grant(user, "vitals.record", "triage.start")
         first = api.post("/api/v1/sync/push/", {"operations": [operation]}, format="json", **header)
         assert first.status_code == 200, first.data
         assert first.data["results"][0]["status"] == "synced"
@@ -110,6 +101,22 @@ def walk_visit(api, clinic, branch, user, *, pay=True, interrupt_sync=False):
         assert second.data["results"][0]["duplicate"] is True
         assert VitalSign.objects.filter(encounter_id=encounter_id).count() == 1
         assert SyncOperation.objects.filter(operation_id=operation["operation_id"]).count() == 1
+
+    assert api.post(f"/api/v1/queue-entries/{entry_id}/call/", **header).status_code == 200
+    started_queue = api.post(f"/api/v1/queue-entries/{entry_id}/start/", **header)
+    assert started_queue.status_code == 200, started_queue.data
+
+    opened = start(api, appointment_id)
+    assert opened.status_code == 201, opened.data
+    assert opened.data["id"] == encounter_id
+    assert opened.data["status"] == "open"
+    note = api.post(
+        f"/api/v1/encounters/{encounter_id}/notes/",
+        {"body": "Sore throat since yesterday."},
+        format="json",
+        **header,
+    )
+    assert note.status_code == 201, note.data
 
     medicine = _medicine(api, code=f"amox{uuid.uuid4().hex[:4]}")
     batch = _batch(api, branch, medicine["id"], quantity=10)

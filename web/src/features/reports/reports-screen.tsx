@@ -6,7 +6,6 @@ import {
   ClipboardList,
   Download,
   FlaskConical,
-  Pill,
   Receipt,
   Stethoscope,
   TrendingUp,
@@ -16,7 +15,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { DetailField, DetailGrid, DetailSection } from "@/components/detail-fields";
@@ -32,6 +31,8 @@ import { useBillingLookups } from "@/features/billing/billing-lookups";
 import { formatMoney } from "@/features/billing/billing-utils";
 import { RequirePermission } from "@/features/access/require-permission";
 import { useAuth } from "@/features/auth/auth-provider";
+import { CcrReportPanel } from "@/features/reports/ccr-report-panel";
+import { PharmacyReportPanel } from "@/features/reports/pharmacy-report-panel";
 import {
   type DatePreset,
   type ReportRange,
@@ -39,8 +40,8 @@ import {
   formatRangeLabel,
   rangeFromPreset,
   rangeQueryParams,
-  todayIso,
 } from "@/features/reports/report-utils";
+import { clinicTimeZone } from "@/lib/dates/clinic-date";
 import { api, withQuery } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 
@@ -139,25 +140,6 @@ type ReportsClinical = ReportMeta & {
   follow_ups_due_30_days: number;
 };
 
-type ReportsPharmacy = ReportMeta & {
-  medicines_tracked: number;
-  total_units_on_hand: number;
-  low_stock_items: Array<{
-    medicine_id: string;
-    medicine_code: string;
-    medicine_name: string;
-    quantity_on_hand: number;
-    reorder_level: number;
-  }>;
-  low_stock_count: number;
-  expiring_within_30_days: number;
-  expiring_within_60_days: number;
-  expiring_within_90_days: number;
-  dispense_by_medicine: Array<{ medicine_id: string; code: string; name: string; units: number }>;
-  movement_summary: { stock_in_units: number; dispense_units: number; adjustment_units: number };
-  adjustments_by_reason: Record<string, number>;
-};
-
 type ReportsLaboratory = ReportMeta & {
   order_count: number;
   orders_by_status: Record<string, number>;
@@ -202,8 +184,9 @@ export function ReportsScreen() {
 }
 
 function ReportsHub() {
-  const { branchId } = useAuth();
-  const initial = rangeFromPreset("today");
+  const { account, branchId } = useAuth();
+  const timeZone = clinicTimeZone(account?.clinic_timezone);
+  const initial = useMemo(() => rangeFromPreset("today", timeZone), [timeZone]);
   const [preset, setPreset] = useState<DatePreset>("today");
   const [draftFrom, setDraftFrom] = useState(initial.from);
   const [draftTo, setDraftTo] = useState(initial.to);
@@ -214,6 +197,16 @@ function ReportsHub() {
   const queryParams = useMemo(() => rangeQueryParams(range), [range]);
   const rangeLabel = formatRangeLabel(range.from, range.to);
   const isSingleDay = range.from === range.to;
+
+  useEffect(() => {
+    if (preset !== "today") {
+      return;
+    }
+    const next = rangeFromPreset("today", timeZone);
+    setDraftFrom(next.from);
+    setDraftTo(next.to);
+    setRange({ preset: "today", ...next });
+  }, [preset, timeZone]);
 
   const summary = useQuery({
     queryKey: ["reports", "summary", range, branchId],
@@ -239,11 +232,6 @@ function ReportsHub() {
     queryFn: () => api<ReportsClinical>(withQuery("/reports/clinical/", queryParams)),
     enabled: tab === "clinical",
   });
-  const pharmacy = useQuery({
-    queryKey: ["reports", "pharmacy", range, branchId],
-    queryFn: () => api<ReportsPharmacy>(withQuery("/reports/pharmacy/", queryParams)),
-    enabled: tab === "pharmacy",
-  });
   const laboratory = useQuery({
     queryKey: ["reports", "laboratory", range, branchId],
     queryFn: () => api<ReportsLaboratory>(withQuery("/reports/laboratory/", queryParams)),
@@ -255,7 +243,7 @@ function ReportsHub() {
     if (next === "custom") {
       return;
     }
-    const nextRange = rangeFromPreset(next);
+    const nextRange = rangeFromPreset(next, timeZone);
     setDraftFrom(nextRange.from);
     setDraftTo(nextRange.to);
     setRange({ preset: next, ...nextRange });
@@ -271,6 +259,7 @@ function ReportsHub() {
     setExporting(true);
     try {
       await downloadReportCsv(TAB_EXPORT[tab] ?? "summary", queryParams);
+      toast.success("Report CSV downloaded.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Export failed.");
     } finally {
@@ -285,11 +274,9 @@ function ReportsHub() {
         ? operations
         : tab === "clinical"
           ? clinical
-          : tab === "pharmacy"
-            ? pharmacy
-            : tab === "laboratory"
-              ? laboratory
-              : summary;
+          : tab === "laboratory"
+            ? laboratory
+            : summary;
 
   const currency = summary.data?.currency ?? "USD";
   const locale = summary.data?.locale;
@@ -301,10 +288,12 @@ function ReportsHub() {
         title="Reports"
         description="Branch-scoped analytics across finance, operations, clinical care, pharmacy, and laboratory."
         action={
-          <Button type="button" variant="outline" disabled={exporting} onClick={() => void onExport()}>
-            <Download className="mr-2 size-4" aria-hidden="true" />
-            Export CSV
-          </Button>
+          tab === "ccr" ? null : (
+            <Button type="button" variant="outline" disabled={exporting} onClick={() => void onExport()}>
+              <Download className="mr-2 size-4" aria-hidden="true" />
+              {exporting ? "Downloading…" : "Download CSV"}
+            </Button>
+          )
         }
       />
 
@@ -350,6 +339,7 @@ function ReportsHub() {
           <TabsTrigger value="financial">Financial</TabsTrigger>
           <TabsTrigger value="operations">Operations</TabsTrigger>
           <TabsTrigger value="clinical">Clinical</TabsTrigger>
+          <TabsTrigger value="ccr">CCR</TabsTrigger>
           <TabsTrigger value="pharmacy">Pharmacy</TabsTrigger>
           <TabsTrigger value="laboratory">Laboratory</TabsTrigger>
         </TabsList>
@@ -579,47 +569,12 @@ function ReportsHub() {
           ) : null}
         </TabsContent>
 
+        <TabsContent value="ccr" className="space-y-8">
+          <CcrReportPanel range={range} />
+        </TabsContent>
+
         <TabsContent value="pharmacy" className="space-y-8">
-          {pharmacy.data ? (
-            <>
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <StatCard icon={Pill} label="Medicines tracked" value={String(pharmacy.data.medicines_tracked)} hint={`${pharmacy.data.total_units_on_hand} units on hand`} />
-                <StatCard icon={Activity} label="Low stock" value={String(pharmacy.data.low_stock_count)} hint="At or below reorder level" />
-                <StatCard icon={TrendingUp} label="Dispensed" value={String(pharmacy.data.movement_summary.dispense_units)} hint="Units in period" />
-                <StatCard icon={Receipt} label="Expiring ≤30d" value={String(pharmacy.data.expiring_within_30_days)} hint="Units on hand" />
-              </div>
-
-              <DetailSection title="Low stock items">
-                {pharmacy.data.low_stock_items.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No low-stock medicines right now.</p>
-                ) : (
-                  <BreakdownTable
-                    headers={["Medicine", "On hand", "Reorder level"]}
-                    rows={pharmacy.data.low_stock_items.map((row) => [
-                      `${row.medicine_code} · ${row.medicine_name}`,
-                      String(row.quantity_on_hand),
-                      String(row.reorder_level),
-                    ])}
-                  />
-                )}
-                <p className="mt-3 text-sm">
-                  <Link href="/pharmacy" className="text-primary underline-offset-4 hover:underline">
-                    Open pharmacy inventory →
-                  </Link>
-                </p>
-              </DetailSection>
-
-              <DetailSection title="Dispense volume">
-                <BarChart
-                  entries={pharmacy.data.dispense_by_medicine.map((row) => ({
-                    label: row.code,
-                    value: row.units,
-                  }))}
-                  emptyLabel="No dispense activity in period."
-                />
-              </DetailSection>
-            </>
-          ) : null}
+          <PharmacyReportPanel range={range} />
         </TabsContent>
 
         <TabsContent value="laboratory" className="space-y-8">

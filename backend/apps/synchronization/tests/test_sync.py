@@ -10,9 +10,25 @@ from apps.accounts.models import User
 from apps.appointments.tests.test_scheduling import auth, grant, make_doctor, make_patient, upcoming_slots
 from apps.audit.models import AuditEvent
 from apps.encounters.models import ClinicalNote, VitalSign
-from apps.encounters.tests.test_encounters import begin_consultation, start
+from apps.appointments.tests.test_scheduling import book, cover
 from apps.synchronization.models import SyncOperation
 from testing import PASSWORD
+
+
+def _queue_for_triage(api, branch, patient, doctor, slot):
+    cover(api, doctor, branch, [slot])
+    booked = book(api, branch, patient, doctor, *slot)
+    assert booked.status_code == 201, booked.data
+    appointment_id = booked.data["id"]
+    assert api.post(f"/api/v1/appointments/{appointment_id}/check-in/").status_code == 200
+    queued = api.post(f"/api/v1/appointments/{appointment_id}/queue/")
+    assert queued.status_code == 201, queued.data
+    return appointment_id, queued.data["id"]
+
+
+def _open_consultation(api, entry_id):
+    assert api.post(f"/api/v1/queue-entries/{entry_id}/call/").status_code == 200
+    assert api.post(f"/api/v1/queue-entries/{entry_id}/start/").status_code == 200
 
 
 @pytest.fixture
@@ -25,20 +41,24 @@ def visit(api_client, clinic, branch, user):
         "appointments.cancel",
         "encounters.view",
         "encounters.create",
+        "vitals.record",
+        "triage.start",
     )
     auth(api_client, user)
     doctor = make_doctor(clinic, branch, email=f"dr-{uuid.uuid4().hex[:8]}@example.com")
     patient = make_patient(branch, name="Lina Chart")
     slot = upcoming_slots(clinic, count=1)[0]
-    appointment_id = begin_consultation(api_client, branch, patient, doctor, slot)
-    opened = start(api_client, appointment_id)
-    assert opened.status_code == 201, opened.data
+    appointment_id, entry_id = _queue_for_triage(api_client, branch, patient, doctor, slot)
+    triage = api_client.post(f"/api/v1/queue-entries/{entry_id}/triage/start/")
+    assert triage.status_code == 200, triage.data
     return {
         "api": api_client,
         "clinic": clinic,
         "branch": branch,
         "user": user,
-        "encounter_id": opened.data["id"],
+        "appointment_id": appointment_id,
+        "entry_id": entry_id,
+        "encounter_id": triage.data["encounter"]["id"],
     }
 
 
@@ -155,7 +175,7 @@ def test_retry_applies_a_failed_operation_once(visit, clinic):
     assert "permission" in first.data["results"][0]["last_error"]
     assert VitalSign.objects.filter(encounter_id=visit["encounter_id"]).count() == 0
 
-    grant(nurse, "encounters.create", "encounters.view")
+    grant(nurse, "vitals.record", "encounters.view")
     second = _push(client, visit, [operation])
     assert second.status_code == 200, second.data
     assert second.data["results"][0]["status"] == "synced"
@@ -227,6 +247,7 @@ def test_multiple_devices_share_changes_without_reprocessing(visit, clinic, othe
     assert replayed.data["results"][0]["status"] == "failed"
     assert VitalSign.objects.filter(encounter_id=visit["encounter_id"]).count() == 1
 
+    _open_consultation(visit["api"], visit["entry_id"])
     note = _operation(visit, device_id="device-b")
     note["user_id"] = str(colleague.id)
     note["entity_type"] = "encounters.ClinicalNote"

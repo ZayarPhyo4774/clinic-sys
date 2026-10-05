@@ -20,11 +20,17 @@ def cancel_prescription(prescription_id) -> Prescription:
         return prescription
 
 
+def _item_fulfilled(item: PrescriptionItem) -> bool:
+    if item.source == PrescriptionItem.Source.EXTERNAL:
+        return True
+    return item.quantity_dispensed >= item.quantity
+
+
 def _refresh_status(prescription: Prescription) -> Prescription:
     items = list(prescription.items.all())
     if not items:
         return prescription
-    if all(item.quantity_dispensed >= item.quantity for item in items):
+    if all(_item_fulfilled(item) for item in items):
         prescription.status = Prescription.Status.DISPENSED
     elif any(item.quantity_dispensed > 0 for item in items):
         prescription.status = Prescription.Status.PARTIALLY_DISPENSED
@@ -37,7 +43,13 @@ def dispense_item(*, item_id, batch_id, quantity, user) -> StockTransaction:
         with transaction.atomic():
             item = PrescriptionItem.objects.select_related("prescription").get(pk=item_id)
             prescription = Prescription.objects.select_for_update().get(pk=item.prescription_id)
-            item = PrescriptionItem.objects.select_for_update().select_related("medicine").get(pk=item_id)
+            item = (
+                PrescriptionItem.objects.select_for_update(of=("self",))
+                .select_related("medicine")
+                .get(pk=item_id)
+            )
+            if item.source == PrescriptionItem.Source.EXTERNAL:
+                raise ValidationError({"source": "External prescription items cannot be dispensed from inventory."})
             if prescription.status not in Prescription.OPENABLE:
                 raise ValidationError({"status": "This status change is not allowed."})
             remaining = item.quantity - item.quantity_dispensed

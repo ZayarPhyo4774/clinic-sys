@@ -32,10 +32,23 @@ export function formatQuantityWithUnit(quantity: number | string, unit?: string)
 }
 
 export function resolvePrescriptionItemUnit(
-  item: Pick<PrescriptionItem, "medicine" | "medicine_unit">,
+  item: Pick<PrescriptionItem, "source" | "medicine" | "medicine_unit">,
   unitFor?: (medicineId: string) => string | undefined,
 ) {
-  return item.medicine_unit || unitFor?.(item.medicine) || "";
+  if (item.source === "external") {
+    return "";
+  }
+  return item.medicine_unit || (item.medicine ? unitFor?.(item.medicine) : "") || "";
+}
+
+export function prescriptionItemMedicineLabel(
+  item: Pick<PrescriptionItem, "source" | "medicine" | "medicine_name">,
+  labelFor?: (medicineId: string) => string,
+) {
+  if (item.source === "external") {
+    return item.medicine_name?.trim() || "External medicine";
+  }
+  return item.medicine ? labelFor?.(item.medicine) || item.medicine : "—";
 }
 
 export function formatMedicineLabel(medicine: Pick<Medicine, "name" | "strength" | "unit">) {

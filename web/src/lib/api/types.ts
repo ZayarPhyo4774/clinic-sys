@@ -14,6 +14,7 @@ export type AssignedBranch = {
   id: string;
   name: string;
   code: string;
+  inventory_role?: "store" | "dispensary" | "both";
 };
 
 export type Account = {
@@ -38,6 +39,8 @@ export type Patient = {
   branch: string;
   full_name: string;
   date_of_birth: string;
+  dob_is_approximate: boolean;
+  age: number;
   sex: string;
   is_active: boolean;
   version: number;
@@ -65,12 +68,20 @@ export type QueueEntry = {
   id: string;
   appointment: string;
   appointment_status: string;
+  encounter: string | null;
   patient: string;
   doctor: string;
   doctor_full_name?: string;
   service_date: string;
   position: number;
   status: string;
+  triage_started_at: string | null;
+  vitals_recorded_at: string | null;
+};
+
+export type TriageStartResult = {
+  queue_entry: QueueEntry;
+  encounter: Encounter;
 };
 
 export type Encounter = {
@@ -80,6 +91,7 @@ export type Encounter = {
   doctor: string;
   doctor_full_name?: string;
   status: string;
+  phase: "triage" | "consultation";
   started_at: string;
   completed_at: string | null;
 };
@@ -106,6 +118,157 @@ export type Medicine = {
   available_quantity: number;
   is_active: boolean;
 };
+
+export type MedicineBulkImportResult = {
+  created: number;
+  skipped: number;
+  categories_created: number;
+  errors: Array<{ row: number; code?: string | null; message: string }>;
+};
+
+export type BulkStockReceiveResult = {
+  created: number;
+  updated: number;
+  reference_number: string;
+  errors: Array<{ row: number; medicine_code?: string | null; message: string }>;
+};
+
+export type GoodsReceiptLine = {
+  id: string;
+  medicine: string;
+  medicine_name: string;
+  medicine_code: string;
+  batch_number: string;
+  expiry_date: string;
+  quantity: number;
+  batch_id: string | null;
+};
+
+export type GoodsReceiptNote = {
+  id: string;
+  branch: string;
+  branch_name: string;
+  supplier: string | null;
+  supplier_name: string;
+  reference_number: string;
+  received_at: string;
+  status: "draft" | "posted" | "cancelled";
+  notes: string;
+  lines: GoodsReceiptLine[];
+  line_count: number;
+  posted_at: string | null;
+};
+
+export type PharmacyLedgerRow = {
+  medicine_id: string;
+  medicine_code: string;
+  medicine_name: string;
+  strength: string;
+  category: string;
+  unit: string;
+  opening_balance: number;
+  received: number;
+  used: number;
+  adjustment_in: number;
+  adjustment_out: number;
+  transfer_in: number;
+  transfer_out: number;
+  remaining_balance: number;
+  reorder_level: number;
+  status: "out_of_stock" | "low_stock" | "in_stock";
+  batch_count: number;
+  nearest_expiry: string | null;
+};
+
+export type PharmacyReport = {
+  from: string;
+  to: string;
+  medicines_tracked: number;
+  total_units_on_hand: number;
+  total_used: number;
+  low_stock_count: number;
+  low_stock_items: Array<{
+    medicine_id: string;
+    medicine_code: string;
+    medicine_name: string;
+    quantity_on_hand: number;
+    reorder_level: number;
+    used?: number;
+    status?: string;
+  }>;
+  expiring_within_30_days: number;
+  expiring_within_60_days: number;
+  expiring_within_90_days: number;
+  dispense_by_medicine: Array<{ medicine_id: string; code: string; name: string; units: number }>;
+  movement_summary: {
+    stock_in_units: number;
+    dispense_units: number;
+    used_units: number;
+    adjustment_units: number;
+    adjustment_in_units: number;
+    adjustment_out_units: number;
+    transfer_in_units: number;
+    transfer_out_units: number;
+  };
+  adjustments_by_reason: Record<string, number>;
+  inventory_by_role: Record<
+    string,
+    {
+      label: string;
+      units_on_hand: number;
+      batch_count: number;
+    }
+  >;
+  inventory_ledger: PharmacyLedgerRow[];
+  ledger_totals: {
+    opening_balance: number;
+    received: number;
+    used: number;
+    adjustment_in: number;
+    adjustment_out: number;
+    transfer_in: number;
+    transfer_out: number;
+    remaining_balance: number;
+  };
+  movement_lines: Array<{
+    recorded_at: string;
+    medicine_code: string;
+    medicine_name: string;
+    batch_number: string;
+    branch_name: string;
+    kind: string;
+    kind_label: string;
+    direction: string;
+    quantity: number;
+    signed_quantity: number;
+    reason: string;
+    recorded_by: string;
+  }>;
+  on_hand_by_medicine: Array<{
+    medicine_id: string;
+    medicine_code: string;
+    medicine_name: string;
+    unit: string;
+    quantity_on_hand: number;
+    reorder_level: number;
+    batch_count: number;
+    nearest_expiry: string | null;
+  }>;
+  batch_register: Array<{
+    batch_id: string;
+    batch_number: string;
+    medicine_code: string;
+    medicine_name: string;
+    branch_name: string;
+    branch_role: string;
+    quantity_on_hand: number;
+    expiry_date: string;
+    supplier_name: string;
+  }>;
+};
+
+/** @deprecated Use PharmacyReport */
+export type PharmacyInventoryReport = PharmacyReport;
 
 export type MedicineCategory = {
   id: string;
@@ -213,6 +376,81 @@ export type Clinic = {
   is_active: boolean;
 };
 
+export type ClinicDisabilityType = {
+  id: string;
+  clinic: string;
+  sort_order: number;
+  label: string;
+  is_active: boolean;
+};
+
+export type ClinicCcrSettings = {
+  project_name: string;
+  state_region: string;
+  township_mimu: string;
+  village_mimu: string;
+  population_type: "" | "host" | "idps";
+  idp_location: "" | "forest" | "monastery" | "school" | "other";
+  consultant_name: string;
+  consultant_position: string;
+  required_fields: string[];
+  required_field_choices: string[];
+  updated_at: string;
+};
+
+export type EncounterConsultationMeta = {
+  patient_status: "" | "new" | "old";
+  suggested_patient_status: "new" | "old";
+  is_plw: boolean;
+  is_disabled: boolean;
+  disability_type: string | null;
+  disability_type_label?: string | null;
+  referral_made: boolean;
+  referral_cause: string;
+  treatment: string;
+  remark: string;
+  required_fields: string[];
+  updated_at: string;
+};
+
+export type CcrReportRow = {
+  no: number;
+  name: string;
+  age: string;
+  gender: string;
+  diagnosis: string;
+  treatment: string;
+  plw: string;
+  disabled: string;
+  disability_type_number: string;
+  status_old: string;
+  status_new: string;
+  referral: string;
+  referral_cause: string;
+  remark: string;
+};
+
+export type CcrReport = {
+  header: {
+    title: string;
+    project_name: string;
+    state_region: string;
+    township_mimu: string;
+    village_mimu: string;
+    population_type: string;
+    idp_location: string;
+    consultant_name: string;
+    consultant_position: string;
+    from: string;
+    to: string;
+    report_date: string;
+    report_date_formatted: string;
+  };
+  rows: CcrReportRow[];
+  disability_types: Array<{ sort_order: number; label: string }>;
+  row_count: number;
+};
+
 export type PatientContact = {
   id: string;
   kind: string;
@@ -280,9 +518,19 @@ export type VitalUnitField = {
 
 export type VitalUnitsResponse = {
   fields: VitalUnitField[];
+  options?: Partial<Record<VitalUnitFieldName, string[]>>;
+  defaults?: Partial<Record<VitalUnitFieldName, string>>;
+};
+
+export type ClinicVitalSettings = {
+  units: Partial<Record<VitalUnitFieldName, string>>;
+  configured_units: Partial<Record<VitalUnitFieldName, string>>;
+  options: Partial<Record<VitalUnitFieldName, string[]>>;
+  defaults: Partial<Record<VitalUnitFieldName, string>>;
 };
 
 export type EncounterHistory = {
+  consultation_meta?: EncounterConsultationMeta;
   encounter: Encounter & {
     clinic: string;
     branch: string;
@@ -313,7 +561,9 @@ export type EncounterHistory = {
 
 export type PrescriptionItem = {
   id: string;
-  medicine: string;
+  source: "inventory" | "external";
+  medicine: string | null;
+  medicine_name?: string;
   medicine_unit?: string;
   quantity: string;
   quantity_dispensed: string;

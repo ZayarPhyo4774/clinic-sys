@@ -8,24 +8,13 @@ import { StatusText } from "@/components/record-browser";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { VitalsGridReadonly } from "@/components/vitals/vitals-grid";
 import { useVitalUnits } from "@/hooks/use-vital-units";
 import type { Encounter, Patient, PatientProfile } from "@/lib/api/types";
-import { DEFAULT_VITAL_UNITS, vitalSnapshotItems, type VitalRowValues } from "@/lib/vitals/units";
+import { formatPatientBirthSummary } from "@/lib/patients/age";
+export { formatPatientAgeLabel, patientAge } from "@/lib/patients/age";
+import { computeBmi, DEFAULT_VITAL_UNITS, type VitalRowValues } from "@/lib/vitals/units";
 import { cn, formatWhen } from "@/lib/utils";
-
-export function patientAge(dateOfBirth: string) {
-  const born = new Date(dateOfBirth);
-  if (Number.isNaN(born.getTime())) {
-    return null;
-  }
-  const today = new Date();
-  let age = today.getFullYear() - born.getFullYear();
-  const monthDiff = today.getMonth() - born.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < born.getDate())) {
-    age -= 1;
-  }
-  return age;
-}
 
 export function formatSex(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -33,16 +22,6 @@ export function formatSex(value: string) {
 
 function activeMedicalHistory(profile: PatientProfile) {
   return profile.medical_history.filter((row) => row.status === "active");
-}
-
-export function computeBmi(weightKg: string | null, heightCm: string | null) {
-  const weight = weightKg ? Number(weightKg) : NaN;
-  const height = heightCm ? Number(heightCm) / 100 : NaN;
-  if (!Number.isFinite(weight) || !Number.isFinite(height) || height <= 0) {
-    return null;
-  }
-  const bmi = weight / (height * height);
-  return bmi.toFixed(1);
 }
 
 type VitalRow = VitalRowValues & {
@@ -63,19 +42,10 @@ export function VitalSnapshot({ vitals }: { vitals: VitalRow[] }) {
     latest.weight_kg != null ? String(latest.weight_kg) : null,
     latest.height_cm != null ? String(latest.height_cm) : null,
   );
-  const items = vitalSnapshotItems(latest, vitalUnits, bmi);
-
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">Latest · {formatWhen(latest.recorded_at)}</p>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {items.map((item) => (
-          <div key={item.label} className="rounded-lg border bg-muted/30 px-3 py-2">
-            <p className="text-xs text-muted-foreground">{item.label}</p>
-            <p className="text-sm font-semibold tabular-nums">{item.value}</p>
-          </div>
-        ))}
-      </div>
+      <VitalsGridReadonly row={latest} fields={vitalUnits} bmi={bmi} />
     </div>
   );
 }
@@ -89,7 +59,6 @@ export function ConsultationPatientBanner({
   profile: PatientProfile;
   encounter: Encounter;
 }) {
-  const age = patientAge(patient.date_of_birth);
   const history = activeMedicalHistory(profile);
 
   return (
@@ -106,7 +75,7 @@ export function ConsultationPatientBanner({
               <StatusText value={encounter.status} />
             </div>
             <p className="text-sm text-muted-foreground">
-              {age !== null ? `${age} years` : "Age unknown"} · {formatSex(patient.sex)} · DOB {patient.date_of_birth}
+              {formatPatientBirthSummary(patient)} · {formatSex(patient.sex)}
             </p>
             {history.length > 0 ? (
               <p className="text-sm">

@@ -24,6 +24,8 @@ MODULE_PERMISSIONS = (
     ("encounters.view", "Read consultations"),
     ("encounters.create", "Record consultation facts"),
     ("encounters.update", "Complete a consultation"),
+    ("vitals.record", "Record vital signs during triage"),
+    ("triage.start", "Start triage for a queued patient"),
     ("prescriptions.view", "Read prescriptions"),
     ("prescriptions.create", "Write prescriptions"),
     ("pharmacy.view", "Read the pharmacy"),

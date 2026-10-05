@@ -29,6 +29,7 @@ class EncounterSerializer(DoctorFullNameMixin, serializers.ModelSerializer):
             "doctor",
             "doctor_full_name",
             "status",
+            "phase",
             "started_at",
             "started_by",
             "completed_at",
@@ -44,6 +45,7 @@ class EncounterSerializer(DoctorFullNameMixin, serializers.ModelSerializer):
             "doctor",
             "doctor_full_name",
             "status",
+            "phase",
             "started_at",
             "started_by",
             "completed_at",
@@ -55,6 +57,8 @@ class EncounterSerializer(DoctorFullNameMixin, serializers.ModelSerializer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         request = self.context.get("request")
+        if "appointment" in self.fields:
+            self.fields["appointment"].validators = []
         if request is None or "appointment" not in self.fields:
             return
         appointments = Appointment.objects.filter(status=Appointment.Status.IN_CONSULTATION)
@@ -132,6 +136,24 @@ class VitalSignSerializer(FactSerializer):
             "height_cm",
         ]
         read_only_fields = FactSerializer.read_only_attribution
+
+    def validate(self, attrs):
+        encounter = self.context.get("encounter")
+        if encounter is None:
+            return attrs
+        from apps.clinics.vital_settings_services import get_clinic_vital_unit_overrides
+        from apps.encounters.vital_conversions import normalize_vital_field_to_storage
+        from apps.encounters.vital_units import resolve_vital_units
+
+        overrides = get_clinic_vital_unit_overrides(encounter.clinic)
+        units_by_field = {row["field"]: row["unit"] for row in resolve_vital_units(overrides)}
+        for field in VitalSign.content_fields:
+            if field not in attrs or attrs[field] is None:
+                continue
+            display_unit = units_by_field.get(field)
+            if display_unit:
+                attrs[field] = normalize_vital_field_to_storage(field, attrs[field], display_unit)
+        return attrs
 
 
 class SymptomSerializer(FactSerializer):

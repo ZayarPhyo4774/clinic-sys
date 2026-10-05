@@ -11,8 +11,13 @@ import {
   PrintToolbar,
 } from "@/components/print/print-document";
 import { PatientAllergyAlert, activeAllergies } from "@/components/patient-allergy-alert";
-import { formatSex, patientAge } from "@/features/consultation/consultation-chart";
-import { formatMedicineUnit, resolvePrescriptionItemUnit } from "@/features/prescriptions/prescription-utils";
+import { formatSex } from "@/features/consultation/consultation-chart";
+import { formatPatientAgeLabel } from "@/lib/patients/age";
+import {
+  formatMedicineUnit,
+  prescriptionItemMedicineLabel,
+  resolvePrescriptionItemUnit,
+} from "@/features/prescriptions/prescription-utils";
 import { useMedicineLabelMap } from "@/features/prescriptions/use-medicine-labels";
 import { RequirePermission } from "@/features/access/require-permission";
 import { useDetailQuery, useRelatedListQuery } from "@/hooks/use-detail-query";
@@ -82,7 +87,6 @@ function PrescriptionPrint({ prescriptionId, autoPrint }: { prescriptionId: stri
   const prescription = query.data;
   const patient = patientQuery.data;
   const doctorName = prescription.doctor_full_name?.trim() || "Prescriber";
-  const age = patient ? patientAge(patient.date_of_birth) : null;
   const allergies = profileQuery.data ? activeAllergies(profileQuery.data.allergies) : [];
 
   return (
@@ -113,7 +117,7 @@ function PrescriptionPrint({ prescriptionId, autoPrint }: { prescriptionId: stri
               { label: "Patient No.", value: patient?.patient_number ?? "—" },
               {
                 label: "Age / Sex",
-                value: patient ? `${age ?? "—"} years · ${formatSex(patient.sex)}` : "—",
+                value: patient ? `${formatPatientAgeLabel(patient)} · ${formatSex(patient.sex)}` : "—",
               },
               { label: "Prescribed", value: formatWhen(prescription.created_at) },
               {
@@ -143,7 +147,7 @@ function PrescriptionPrint({ prescriptionId, autoPrint }: { prescriptionId: stri
             rows={items.map((item) => {
               const unit = resolvePrescriptionItemUnit(item, unitFor);
               return [
-                labelFor(item.medicine),
+                prescriptionItemMedicineLabel(item, labelFor),
                 item.dosage,
                 item.frequency || "—",
                 item.duration_days ? `${item.duration_days} days` : "—",

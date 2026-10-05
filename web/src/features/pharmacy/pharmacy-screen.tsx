@@ -34,6 +34,8 @@ import { RequirePermission } from "@/features/access/require-permission";
 import { useAuth } from "@/features/auth/auth-provider";
 import { ToggleActiveButton } from "@/features/organization/org-writes";
 import { InventoryLedger } from "@/features/pharmacy/inventory-ledger";
+import { MedicineList } from "@/features/pharmacy/medicine-list";
+import { PharmacyInventoryReportPanel } from "@/features/pharmacy/pharmacy-inventory-report";
 import { PharmacyStockMovement } from "@/features/pharmacy/pharmacy-stock-movement";
 import {
   CreateCategoryForm,
@@ -389,7 +391,7 @@ function PharmacyInventory() {
 function PharmacyWorkspace() {
   const { account } = useAuth();
   const canManage = Boolean(account && allowed(account.permissions, "pharmacy.manage"));
-  const [tab, setTab] = useState("inventory");
+  const [tab, setTab] = useState("medicines");
 
   const medicinesQuery = useQuery({
     queryKey: ["medicines", "stats"],
@@ -483,12 +485,18 @@ function PharmacyWorkspace() {
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="h-auto w-full flex-wrap justify-start gap-1">
+          <TabsTrigger value="medicines">Medicine list</TabsTrigger>
           <TabsTrigger value="inventory">Inventory</TabsTrigger>
           <TabsTrigger value="ledger">Inventory ledger</TabsTrigger>
           {canManage ? <TabsTrigger value="stock">Stock movement</TabsTrigger> : null}
+          <TabsTrigger value="inventory-report">Inventory report</TabsTrigger>
           {canManage ? <TabsTrigger value="catalog">Catalog setup</TabsTrigger> : null}
           {canManage ? <TabsTrigger value="add">Add medicine</TabsTrigger> : null}
         </TabsList>
+
+        <TabsContent value="medicines" className="mt-6">
+          <MedicineList />
+        </TabsContent>
 
         <TabsContent value="inventory" className="mt-6">
           <PharmacyInventory />
@@ -506,6 +514,10 @@ function PharmacyWorkspace() {
             </div>
           </div>
           <InventoryLedger />
+        </TabsContent>
+
+        <TabsContent value="inventory-report" className="mt-6">
+          <PharmacyInventoryReportPanel />
         </TabsContent>
 
         {canManage ? (

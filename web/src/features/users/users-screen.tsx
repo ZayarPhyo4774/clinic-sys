@@ -164,9 +164,10 @@ function UsersAdmin() {
       <Card className="border-primary/20 bg-primary/5 shadow-premium-sm">
         <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="font-semibold">Solo clinic setup</p>
+            <p className="font-semibold">People & permissions</p>
             <p className="text-sm text-muted-foreground">
-              Create the doctor&apos;s login here, then assign <span className="font-medium text-foreground">Solo Practitioner</span> on the Roles page.
+              Create logins here, then assign roles on the Roles page. Clinical roles (e.g. Solo Practitioner) also need a
+              Staff record under Settings → Staff for scheduling.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

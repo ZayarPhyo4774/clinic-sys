@@ -1,13 +1,15 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.exceptions import NotFound, ValidationError as DRFValidationError
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.response import Response
 
 from apps.audit.services import client_ip, record_audit_event
 from apps.clinics.scoping import apply_clinic_scope, header_branch_id, parse_bool, parse_uuid
+from apps.patients.document_storage import resolve_patient_document_path, save_patient_document
 from apps.patients.models import (
     Patient,
     PatientAddress,
@@ -221,6 +223,56 @@ class PatientDocumentViewSet(PatientChildViewSet):
     audit_entity = "patients.PatientDocument"
     audit_created = "patients.document_created"
     audit_updated = "patients.document_updated"
+    permission_map = {
+        **PatientChildViewSet.permission_map,
+        "file": "patients.view",
+    }
+
+    def create(self, request, *args, **kwargs):
+        upload = request.FILES.get("file")
+        if upload is None:
+            return super().create(request, *args, **kwargs)
+        patient = self.get_patient()
+        title = (request.data.get("title") or "").strip()
+        document_type = request.data.get("document_type") or PatientDocument.DocumentType.OTHER
+        if not title:
+            raise DRFValidationError({"title": ["Title is required."]})
+        try:
+            storage_key, file_name, content_type, byte_size = save_patient_document(
+                clinic_id=patient.clinic_id,
+                patient_id=patient.id,
+                upload=upload,
+            )
+        except DjangoValidationError as exc:
+            if getattr(exc, "message_dict", None):
+                raise DRFValidationError(exc.message_dict) from exc
+            raise DRFValidationError(exc.messages) from exc
+        serializer = self.get_serializer(
+            data={
+                "title": title,
+                "document_type": document_type,
+                "file_name": file_name,
+                "content_type": content_type,
+                "byte_size": byte_size,
+                "storage_key": storage_key,
+            }
+        )
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=201, headers=headers)
+
+    def file(self, request, patient_id=None, pk=None, **kwargs):
+        document = self.get_object()
+        path = resolve_patient_document_path(document.storage_key)
+        if not path.is_file():
+            raise NotFound("This file is not available.")
+        response = FileResponse(
+            path.open("rb"),
+            content_type=document.content_type or "application/octet-stream",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{document.file_name}"'
+        return response
 
 
 def _save(serializer, **kwargs):

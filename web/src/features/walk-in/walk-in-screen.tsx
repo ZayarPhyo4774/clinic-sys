@@ -29,12 +29,17 @@ import { allowed } from "@/features/access/navigation";
 import { canUseWalkIn } from "@/features/access/permissions";
 import { RequirePermission } from "@/features/access/require-permission";
 import { QueueActions } from "@/features/queue/queue-actions";
+import { TriageStatusBadge } from "@/features/queue/triage-status";
 import { useAuth } from "@/features/auth/auth-provider";
+import { PatientBirthFields } from "@/features/patients/patient-birth-fields";
 import { sexOptions } from "@/features/patients/contract";
 import { api, withQuery } from "@/lib/api/client";
 import { ApiError, validationError } from "@/lib/api/errors";
 import { formatZodError, registerPatientSchema } from "@/lib/forms/schemas";
 import type { Page, Patient, QueueEntry, WalkInResult } from "@/lib/api/types";
+import type { PatientBirthMode } from "@/lib/patients/age";
+import { formatPatientBirthSummary } from "@/lib/patients/age";
+import { buildPatientDemographicsPayload } from "@/lib/patients/birth-schema";
 import { cn } from "@/lib/utils";
 import { isOnline } from "@/offline/connectivity/network";
 import { requireOnlineMutation } from "@/offline/sync/policy";
@@ -80,7 +85,6 @@ function WalkInDesk() {
   const accountName = account?.full_name;
   const queryClient = useQueryClient();
   const canRegister = Boolean(account && allowed(account.permissions, "patients.create"));
-  const canUpdateQueue = Boolean(account && allowed(account.permissions, "appointments.update"));
 
   const [patientTab, setPatientTab] = useState<"search" | "register">("search");
   const [search, setSearch] = useState("");
@@ -88,7 +92,9 @@ function WalkInDesk() {
   const [doctorId, setDoctorId] = useState("");
   const [visitReason, setVisitReason] = useState("Walk-in");
   const [registerName, setRegisterName] = useState("");
+  const [registerBirthMode, setRegisterBirthMode] = useState<PatientBirthMode>("dob");
   const [registerDob, setRegisterDob] = useState("");
+  const [registerAge, setRegisterAge] = useState("");
   const [registerSex, setRegisterSex] = useState("");
   const [formError, setFormError] = useState<unknown>(null);
   const [registerError, setRegisterError] = useState<unknown>(null);
@@ -139,7 +145,7 @@ function WalkInDesk() {
   const selectedPatient = patientsQuery.data?.find((row) => row.id === patientId);
 
   const registerMutation = useMutation({
-    mutationFn: (payload: { full_name: string; date_of_birth: string; sex: string }) => {
+    mutationFn: (payload: Record<string, string | number>) => {
       requireOnlineMutation("patients.register", isOnline());
       return api<Patient>("/patients/", {
         method: "POST",
@@ -148,7 +154,9 @@ function WalkInDesk() {
     },
     onSuccess: async (patient) => {
       setRegisterName("");
+      setRegisterBirthMode("dob");
       setRegisterDob("");
+      setRegisterAge("");
       setRegisterSex("");
       setRegisterError(null);
       setPatientId(patient.id);
@@ -199,14 +207,16 @@ function WalkInDesk() {
     setRegisterError(null);
     const parsed = registerPatientSchema.safeParse({
       full_name: registerName,
+      birth_mode: registerBirthMode,
       date_of_birth: registerDob,
+      age: registerAge,
       sex: registerSex || undefined,
     });
     if (!parsed.success) {
       setRegisterError(validationError(formatZodError(parsed.error)));
       return;
     }
-    registerMutation.mutate(parsed.data);
+    registerMutation.mutate(buildPatientDemographicsPayload(parsed.data));
   }
 
   function onCheckIn(event: FormEvent<HTMLFormElement>) {
@@ -309,7 +319,7 @@ function WalkInDesk() {
                     >
                       <p className="font-medium">{row.full_name}</p>
                       <p className="text-sm text-muted-foreground">
-                        {row.patient_number} · {row.date_of_birth}
+                        {row.patient_number} · {formatPatientBirthSummary(row)}
                       </p>
                     </button>
                   ))}
@@ -333,14 +343,16 @@ function WalkInDesk() {
                         onChange={(event) => setRegisterName(event.target.value)}
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="walkin_dob">Date of birth</Label>
-                      <Input
-                        id="walkin_dob"
-                        type="date"
-                        value={registerDob}
-                        required
-                        onChange={(event) => setRegisterDob(event.target.value)}
+                    <div className="sm:col-span-2">
+                      <PatientBirthFields
+                        idPrefix="walkin"
+                        mode={registerBirthMode}
+                        onModeChange={setRegisterBirthMode}
+                        dateOfBirth={registerDob}
+                        onDateOfBirthChange={setRegisterDob}
+                        age={registerAge}
+                        onAgeChange={setRegisterAge}
+                        error={registerError}
                       />
                     </div>
                     <div className="space-y-2">
@@ -365,6 +377,7 @@ function WalkInDesk() {
                     </div>
                     <div className="sm:col-span-2 space-y-1">
                       <FormFieldError error={registerError} name="full_name" />
+                      <FormFieldError error={registerError} name="age" />
                       <FormFieldError error={registerError} name="date_of_birth" />
                       <FormFieldError error={registerError} name="sex" />
                       <FormError error={registerError} />
@@ -453,15 +466,7 @@ function WalkInDesk() {
                       booked automatically.
                     </p>
                   </div>
-                  {canUpdateQueue ? (
-                    <QueueActions
-                      entryId={lastCheckIn.queueEntryId}
-                      status={lastCheckInEntry?.status ?? "waiting"}
-                      appointmentId={lastCheckIn.appointmentId}
-                      appointmentStatus={lastCheckInEntry?.appointment_status ?? "in_queue"}
-                      compact
-                    />
-                  ) : null}
+                  {lastCheckInEntry ? <QueueActions entry={lastCheckInEntry} compact /> : null}
                   <Button asChild size="sm" variant="outline">
                     <Link href={`/appointments/${lastCheckIn.appointmentId}`}>Open visit</Link>
                   </Button>
@@ -508,16 +513,11 @@ function WalkInDesk() {
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-                  <StatusText value={row.status} />
-                  {canUpdateQueue ? (
-                    <QueueActions
-                      entryId={row.id}
-                      status={row.status}
-                      appointmentId={row.appointment}
-                      appointmentStatus={row.appointment_status}
-                      compact
-                    />
-                  ) : null}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <StatusText value={row.status} />
+                    <TriageStatusBadge entry={row} />
+                  </div>
+                  <QueueActions entry={row} compact />
                 </div>
               </div>
             ))}

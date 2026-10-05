@@ -1,7 +1,9 @@
 import uuid
+from datetime import date
 
 import pytest
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 from apps.accounts.models import Permission, Role, User, UserRole
 from apps.audit.models import AuditEvent
@@ -61,6 +63,75 @@ def test_create_patient_assigns_number_and_audits_without_clinical_text(api_clie
     assert event.metadata == {"result": "created"}
     assert "Lina Chart" not in str(event.metadata)
     assert "1985-04-12" not in str(event.metadata)
+
+
+@pytest.mark.django_db
+def test_create_patient_with_age_only(api_client, clerk, branch):
+    auth(api_client, clerk)
+    response = api_client.post(
+        "/api/v1/patients/",
+        {
+            "branch": str(branch.id),
+            "full_name": "Age Only Patient",
+            "age": 45,
+            "sex": "female",
+        },
+        format="json",
+    )
+    assert response.status_code == 201, response.data
+    assert response.data["dob_is_approximate"] is True
+    assert response.data["age"] == 45
+    patient = Patient.objects.get(pk=response.data["id"])
+    assert patient.dob_is_approximate is True
+
+
+@pytest.mark.django_db
+def test_create_patient_rejects_age_and_date_of_birth_together(api_client, clerk, branch):
+    auth(api_client, clerk)
+    response = api_client.post(
+        "/api/v1/patients/",
+        {
+            "branch": str(branch.id),
+            "full_name": "Both Fields",
+            "age": 45,
+            "date_of_birth": "1985-04-12",
+            "sex": "female",
+        },
+        format="json",
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_create_patient_rejects_future_date_of_birth(api_client, clerk, branch):
+    auth(api_client, clerk)
+    response = api_client.post(
+        "/api/v1/patients/",
+        {
+            "branch": str(branch.id),
+            "full_name": "Future Born",
+            "date_of_birth": "2099-01-01",
+            "sex": "female",
+        },
+        format="json",
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_create_patient_skips_numbers_already_in_use(api_client, clerk, branch):
+    Patient.objects.create(
+        clinic=branch.clinic,
+        branch=branch,
+        patient_number="000001",
+        full_name="Aye Aye Patient",
+        date_of_birth=date(1992, 3, 15),
+        sex=Patient.Sex.FEMALE,
+    )
+    auth(api_client, clerk)
+    response = register(api_client, branch, name="U Kyaw Gyi")
+    assert response.status_code == 201
+    assert response.data["patient_number"] == "000002"
 
 
 @pytest.mark.django_db
@@ -343,3 +414,24 @@ def test_document_metadata_and_contact_do_not_enter_the_audit_payload(api_client
     )
     assert inactive.status_code == 400
     assert "branch" in inactive.data["fields"]
+
+
+@pytest.mark.django_db
+def test_patient_document_upload_and_download(api_client, clerk, branch):
+    auth(api_client, clerk)
+    patient = register(api_client, branch)
+    patient_id = patient.data["id"]
+    payload = b"%PDF-1.4 uploaded consent"
+    upload = SimpleUploadedFile("consent.pdf", payload, content_type="application/pdf")
+    created = api_client.post(
+        f"/api/v1/patients/{patient_id}/documents/",
+        {"title": "Consent form", "document_type": "consent", "file": upload},
+        format="multipart",
+    )
+    assert created.status_code == 201, created.data
+    assert created.data["file_name"] == "consent.pdf"
+    assert created.data["storage_key"]
+
+    downloaded = api_client.get(f"/api/v1/patients/{patient_id}/documents/{created.data['id']}/file/")
+    assert downloaded.status_code == 200
+    assert b"".join(downloaded.streaming_content) == payload

@@ -4,6 +4,7 @@ import { RecordBrowser, StatusText } from "@/components/record-browser";
 import { RequirePermission } from "@/features/access/require-permission";
 import { RegisterPatient } from "@/features/patients/register-patient";
 import type { Patient } from "@/lib/api/types";
+import { formatPatientAgeLabel, formatPatientDobLabel } from "@/lib/patients/age";
 
 export function PatientsScreen() {
   return (
@@ -19,7 +20,16 @@ export function PatientsScreen() {
         columns={[
           { key: "number", header: "Number", cell: (row) => row.patient_number },
           { key: "name", header: "Name", cell: (row) => row.full_name },
-          { key: "dob", header: "Date of birth", cell: (row) => row.date_of_birth },
+          {
+            key: "age",
+            header: "Age",
+            cell: (row) => formatPatientAgeLabel(row),
+          },
+          {
+            key: "dob",
+            header: "Birth date",
+            cell: (row) => formatPatientDobLabel(row),
+          },
           { key: "sex", header: "Sex", cell: (row) => row.sex },
           {
             key: "active",

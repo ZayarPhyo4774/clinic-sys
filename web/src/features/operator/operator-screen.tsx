@@ -5,6 +5,9 @@ import { FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { ClinicSetupWizard } from "@/features/operator/clinic-setup-wizard";
+import { OperatorClinicBar } from "@/features/operator/operator-clinic-bar";
+import { OperatorClinicProvider, useOperatorClinic } from "@/features/operator/operator-clinic-context";
 import { OperatorOverview } from "@/features/operator/operator-overview";
 import { useOperatorSection } from "@/features/operator/use-operator-section";
 import { QueryState } from "@/components/query-state";
@@ -39,7 +42,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/features/auth/auth-provider";
-import { api } from "@/lib/api/client";
+import { api, withQuery } from "@/lib/api/client";
 import { ApiError, fieldMessages } from "@/lib/api/errors";
 
 type ClinicRow = { id: string; name: string; code: string; timezone: string; currency: string; is_active: boolean };
@@ -58,8 +61,17 @@ type AssignmentRow = {
   id: string;
   user_email: string;
   role_name: string;
+  role_code?: string;
   branch_name: string | null;
 };
+
+const CLINICAL_ROLE_CODES = new Set([
+  "solo-practitioner",
+  "doctor",
+  "nurse",
+  "pharmacist",
+  "lab-technician",
+]);
 
 type ListResponse<T> = { results: T[] };
 type DefaultRoleInstallResult = {
@@ -151,7 +163,27 @@ function ToggleActiveButton({
 }
 
 export function OperatorScreen() {
+  const clinics = useQuery({
+    queryKey: ["operator", "clinics"],
+    queryFn: () => api<ListResponse<ClinicRow>>("/operator/clinics/"),
+  });
+
+  if (clinics.isLoading) {
+    return <QueryState status="loading" />;
+  }
+
+  const clinicRows = clinics.data?.results ?? [];
+
+  return (
+    <OperatorClinicProvider clinics={clinicRows.map(({ id, name, code }) => ({ id, name, code }))}>
+      <OperatorWorkspace />
+    </OperatorClinicProvider>
+  );
+}
+
+function OperatorWorkspace() {
   const { section } = useOperatorSection();
+  const { clinicId, setClinicId } = useOperatorClinic();
   const { refetchAccount } = useAuth();
   const queryClient = useQueryClient();
 
@@ -160,24 +192,48 @@ export function OperatorScreen() {
     queryFn: () => api<ListResponse<ClinicRow>>("/operator/clinics/"),
   });
   const branches = useQuery({
-    queryKey: ["operator", "branches"],
-    queryFn: () => api<ListResponse<BranchRow>>("/operator/branches/"),
+    queryKey: ["operator", "branches", clinicId],
+    queryFn: () =>
+      api<ListResponse<BranchRow>>(
+        clinicId ? withQuery("/operator/branches/", { clinic: clinicId }) : "/operator/branches/",
+      ),
   });
   const permissions = useQuery({
     queryKey: ["operator", "permissions"],
     queryFn: () => api<ListResponse<PermissionRow>>("/operator/permissions/"),
   });
   const roles = useQuery({
-    queryKey: ["operator", "roles"],
-    queryFn: () => api<ListResponse<RoleRow>>("/operator/roles/"),
+    queryKey: ["operator", "roles", clinicId],
+    queryFn: () =>
+      api<ListResponse<RoleRow>>(
+        clinicId ? withQuery("/operator/roles/", { clinic: clinicId }) : "/operator/roles/",
+      ),
   });
   const users = useQuery({
-    queryKey: ["operator", "users"],
-    queryFn: () => api<ListResponse<UserRow>>("/operator/users/"),
+    queryKey: ["operator", "users", clinicId],
+    queryFn: () =>
+      api<ListResponse<UserRow>>(
+        clinicId ? withQuery("/operator/users/", { clinic: clinicId }) : "/operator/users/",
+      ),
   });
   const assignments = useQuery({
-    queryKey: ["operator", "assignments"],
-    queryFn: () => api<ListResponse<AssignmentRow>>("/operator/assignments/"),
+    queryKey: ["operator", "assignments", clinicId],
+    queryFn: () =>
+      api<ListResponse<AssignmentRow>>(
+        clinicId ? withQuery("/operator/assignments/", { clinic: clinicId }) : "/operator/assignments/",
+      ),
+  });
+  const clinicSetup = useQuery({
+    queryKey: ["operator", "setup", clinicId],
+    queryFn: () =>
+      api<{
+        branch_count: number;
+        role_count: number;
+        user_count: number;
+        assignment_count: number;
+        has_roles: boolean;
+      }>(`/operator/clinics/${clinicId}/setup/`),
+    enabled: Boolean(clinicId),
   });
 
   const [clinicName, setClinicName] = useState("");
@@ -222,10 +278,12 @@ export function OperatorScreen() {
   const [assignBranch, setAssignBranch] = useState("");
   const [assignError, setAssignError] = useState<unknown>(null);
   const [removeAssignmentId, setRemoveAssignmentId] = useState<string | null>(null);
-  const [defaultRoleClinic, setDefaultRoleClinic] = useState("");
   const [overwriteDefaultRoles, setOverwriteDefaultRoles] = useState(false);
   const [defaultRolePreview, setDefaultRolePreview] = useState<DefaultRolePreviewResult | null>(null);
   const [defaultRolePreviewOpen, setDefaultRolePreviewOpen] = useState(false);
+  const [setupWizardOpen, setSetupWizardOpen] = useState(false);
+  const [clinicalPromptOpen, setClinicalPromptOpen] = useState(false);
+  const [clinicalPromptEmail, setClinicalPromptEmail] = useState("");
 
   function refresh(key: string) {
     return queryClient.invalidateQueries({ queryKey: ["operator", key] });
@@ -239,14 +297,12 @@ export function OperatorScreen() {
   const assignmentRows = assignments.data?.results ?? [];
 
   useEffect(() => {
-    if (clinicRows.length === 0) {
-      setDefaultRoleClinic("");
-      return;
+    if (clinicId) {
+      setBranchClinic(clinicId);
+      setRoleClinic(clinicId);
+      setUserClinic(clinicId);
     }
-    if (!defaultRoleClinic || !clinicRows.some((row) => row.id === defaultRoleClinic)) {
-      setDefaultRoleClinic(clinicRows[0].id);
-    }
-  }, [clinicRows, defaultRoleClinic]);
+  }, [clinicId]);
 
   const createClinic = useMutation({
     mutationFn: () =>
@@ -352,7 +408,7 @@ export function OperatorScreen() {
 
   const installDefaultRoles = useMutation({
     mutationFn: () =>
-      api(`/operator/clinics/${defaultRoleClinic}/default-roles/`, {
+      api(`/operator/clinics/${clinicId}/default-roles/`, {
         method: "POST",
         body: JSON.stringify({ update_existing: overwriteDefaultRoles }),
       }) as Promise<DefaultRoleInstallResult>,
@@ -378,7 +434,7 @@ export function OperatorScreen() {
   const previewDefaultRoles = useMutation({
     mutationFn: () =>
       api<DefaultRolePreviewResult>(
-        `/operator/clinics/${defaultRoleClinic}/default-roles/?update_existing=${overwriteDefaultRoles ? "1" : "0"}`,
+        `/operator/clinics/${clinicId}/default-roles/?update_existing=${overwriteDefaultRoles ? "1" : "0"}`,
       ),
     onSuccess: (result) => {
       setDefaultRolePreview(result);
@@ -477,7 +533,7 @@ export function OperatorScreen() {
 
   const assign = useMutation({
     mutationFn: () =>
-      api("/operator/assignments/", {
+      api<{ role_code?: string; is_clinical_role?: boolean }>("/operator/assignments/", {
         method: "POST",
         body: JSON.stringify({
           user: assignUser,
@@ -485,9 +541,16 @@ export function OperatorScreen() {
           branch: assignBranch || null,
         }),
       }),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setAssignError(null);
       toast.success("Role assigned.");
+      const assignedRole = roleRows.find((row) => row.id === assignRole);
+      const roleCode = result.role_code ?? assignedRole?.code;
+      const userEmail = userRows.find((row) => row.id === assignUser)?.email ?? "";
+      if (roleCode && CLINICAL_ROLE_CODES.has(roleCode)) {
+        setClinicalPromptEmail(userEmail);
+        setClinicalPromptOpen(true);
+      }
       await refresh("assignments");
     },
     onError: setAssignError,
@@ -535,6 +598,8 @@ export function OperatorScreen() {
     return <QueryState status="loading" />;
   }
 
+  const scopedBar = section !== "overview" ? <OperatorClinicBar /> : null;
+
   return (
     <>
       {section === "overview" ? (
@@ -543,12 +608,19 @@ export function OperatorScreen() {
           branchCount={branchRows.length}
           permissionCount={permissionRows.length}
           roleCount={roleRows.length}
-          userCount={userRows.length}
+          userCount={userRows.filter((row) => !row.is_superuser).length}
           assignmentCount={assignmentRows.length}
+          clinicBranchCount={clinicSetup.data?.branch_count ?? branchRows.length}
+          clinicRoleCount={clinicSetup.data?.role_count ?? roleRows.length}
+          clinicUserCount={clinicSetup.data?.user_count ?? userRows.filter((row) => !row.is_superuser).length}
+          clinicAssignmentCount={clinicSetup.data?.assignment_count ?? assignmentRows.length}
+          clinicHasRoles={clinicSetup.data?.has_roles ?? roleRows.length > 0}
         />
       ) : null}
 
       {section === "clinics" ? (
+      <>
+      {scopedBar}
       <Card id="clinics" className="shadow-premium-sm">
         <CardHeader>
           <CardTitle>Clinics</CardTitle>
@@ -592,6 +664,17 @@ export function OperatorScreen() {
                           }}
                         >
                           Delete
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            setClinicId(row.id);
+                            setSetupWizardOpen(true);
+                          }}
+                        >
+                          Set up
                         </Button>
                         <ToggleActiveButton
                           active={row.is_active}
@@ -641,9 +724,12 @@ export function OperatorScreen() {
           </form>
         </CardContent>
       </Card>
+      </>
       ) : null}
 
       {section === "branches" ? (
+      <>
+      {scopedBar}
       <Card id="branches" className="shadow-premium-sm">
         <CardHeader>
           <CardTitle>Branches</CardTitle>
@@ -721,34 +807,28 @@ export function OperatorScreen() {
           </form>
         </CardContent>
       </Card>
+      </>
       ) : null}
 
       {section === "access" ? (
+      <>
+      {scopedBar}
       <Card id="access" className="shadow-premium-sm">
         <CardHeader>
-          <CardTitle>Module access</CardTitle>
+          <CardTitle>Feature catalog & default roles</CardTitle>
           <CardDescription>
-            Install the permission codes, then put them on a role. View codes open screens; create and manage codes
-            allow work but do not open lists by themselves.
+            The permission catalog is global. Default role templates are installed per clinic (automatically on clinic
+            create). Use Custom roles for one-off bundles; clinic admins manage day-to-day assignments in their workspace.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-4 rounded-xl border bg-muted/30 p-4">
             <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
               <div className="space-y-2">
-                <Label htmlFor="default-role-clinic">Clinic for default roles</Label>
-                <Select value={defaultRoleClinic} onValueChange={setDefaultRoleClinic}>
-                  <SelectTrigger id="default-role-clinic" className="w-full max-w-md">
-                    <SelectValue placeholder="Select a clinic" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {clinicRows.map((row) => (
-                      <SelectItem key={row.id} value={row.id}>
-                        {row.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <p className="text-sm font-medium">Default roles for selected clinic</p>
+                <p className="text-xs text-muted-foreground">
+                  Includes Solo Practitioner, Receptionist, Doctor, and other templates.
+                </p>
                 <label className="flex items-center gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
@@ -771,14 +851,14 @@ export function OperatorScreen() {
                   type="button"
                   variant="outline"
                   onClick={() => previewDefaultRoles.mutate()}
-                  disabled={previewDefaultRoles.isPending || !defaultRoleClinic}
+                  disabled={previewDefaultRoles.isPending || !clinicId}
                 >
                   Preview changes
                 </Button>
                 <Button
                   type="button"
                   onClick={() => installDefaultRoles.mutate()}
-                  disabled={installDefaultRoles.isPending || !defaultRoleClinic}
+                  disabled={installDefaultRoles.isPending || !clinicId}
                 >
                   {overwriteDefaultRoles ? "Re-sync roles" : "Install default roles"}
                 </Button>
@@ -798,13 +878,18 @@ export function OperatorScreen() {
           </ul>
         </CardContent>
       </Card>
+      </>
       ) : null}
 
       {section === "roles" ? (
+      <>
+      {scopedBar}
       <Card id="roles" className="shadow-premium-sm">
         <CardHeader>
-          <CardTitle>Roles</CardTitle>
-          <CardDescription>A role belongs to one clinic and holds the module codes.</CardDescription>
+          <CardTitle>Custom roles</CardTitle>
+          <CardDescription>
+            Optional clinic-specific permission bundles. Most clinics use default templates from Feature catalog.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="rounded-lg border">
@@ -906,13 +991,19 @@ export function OperatorScreen() {
           </form>
         </CardContent>
       </Card>
+      </>
       ) : null}
 
       {section === "staff" ? (
+      <>
+      {scopedBar}
       <Card id="staff" className="shadow-premium-sm">
         <CardHeader>
-          <CardTitle>Staff logins</CardTitle>
-          <CardDescription>Creates a clinic user. This does not create another operator account.</CardDescription>
+          <CardTitle>Clinic logins</CardTitle>
+          <CardDescription>
+            User accounts for clinic staff (not platform operators). Assign roles on the Role assignments tab or use the
+            setup wizard to do both at once.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="rounded-lg border">
@@ -998,13 +1089,19 @@ export function OperatorScreen() {
           </form>
         </CardContent>
       </Card>
+      </>
       ) : null}
 
       {section === "assignments" ? (
+      <>
+      {scopedBar}
       <Card id="assignments" className="shadow-premium-sm">
         <CardHeader>
           <CardTitle>Role assignments</CardTitle>
-          <CardDescription>Leave the branch empty to cover every branch of that clinic.</CardDescription>
+          <CardDescription>
+            Grants permissions by linking a login to a role. Leave branch empty for all branches. Clinical roles also
+            need a Staff record in the clinic workspace for scheduling.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="rounded-lg border">
@@ -1096,7 +1193,28 @@ export function OperatorScreen() {
           </form>
         </CardContent>
       </Card>
+      </>
       ) : null}
+
+      <ClinicSetupWizard open={setupWizardOpen} onOpenChange={setSetupWizardOpen} />
+
+      <Dialog open={clinicalPromptOpen} onOpenChange={setClinicalPromptOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Staff record?</DialogTitle>
+            <DialogDescription>
+              {clinicalPromptEmail
+                ? `${clinicalPromptEmail} has a clinical role. For appointments and queue visibility, add a matching Staff record in the clinic workspace under Settings → Staff.`
+                : "Clinical roles also need a Staff record in the clinic workspace for scheduling."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setClinicalPromptOpen(false)}>
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={Boolean(removeAssignmentId)}

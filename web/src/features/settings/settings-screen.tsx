@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { allowed } from "@/features/access/navigation";
 import { useAuth } from "@/features/auth/auth-provider";
+import { CcrSettingsForm } from "@/features/settings/ccr-settings-form";
+import { VitalUnitsSettingsForm } from "@/features/settings/vital-units-settings-form";
 import { EditClinicForm } from "@/features/settings/clinic-writes";
 import { withQuery } from "@/lib/api/client";
 import type { Clinic } from "@/lib/api/types";
@@ -86,6 +88,26 @@ export function SettingsScreen() {
               Clear selected branch
             </Button>
           ) : null}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Vital sign units</CardTitle>
+          <CardDescription>Temperature, weight, and height units shown during triage and on encounter records.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <VitalUnitsSettingsForm />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>CCR report & consultation fields</CardTitle>
+          <CardDescription>
+            Configure the Clinical Consultation Record header, disability types, and required consultation fields.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CcrSettingsForm />
         </CardContent>
       </Card>
       <Card>

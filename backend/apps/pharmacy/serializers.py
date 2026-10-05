@@ -237,6 +237,8 @@ class StockTransactionSerializer(serializers.ModelSerializer):
         kind = attrs.get("kind")
         if kind == StockTransaction.Kind.DISPENSE:
             raise serializers.ValidationError({"kind": "Dispense from the prescription item."})
+        if kind == StockTransaction.Kind.TRANSFER:
+            raise serializers.ValidationError({"kind": "Use the stock transfer endpoint."})
         if kind == StockTransaction.Kind.STOCK_IN:
             attrs["direction"] = StockTransaction.Direction.IN
         if kind == StockTransaction.Kind.ADJUSTMENT and not attrs.get("direction"):

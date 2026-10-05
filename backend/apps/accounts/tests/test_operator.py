@@ -3,7 +3,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import Permission, Role, User
 from apps.audit.models import AuditEvent
-from apps.clinics.models import Branch, Clinic
+from apps.clinics.models import Branch, Clinic, DoctorProfile, Staff
 from testing import PASSWORD
 
 
@@ -42,9 +42,10 @@ def test_operator_can_set_up_a_clinic_and_grant_module_access(api_client):
     )
     assert branch.status_code == 201, branch.data
 
+    assert clinic.data["bootstrap"]["created_permissions"] >= 1
+
     installed = api_client.post("/api/v1/operator/permissions/", {}, format="json")
     assert installed.status_code == 200, installed.data
-    assert installed.data["created"] >= 1
     catalog = api_client.get("/api/v1/operator/permissions/")
     codes = {row["code"] for row in catalog.data["results"]}
     assert "patients.view" in codes
@@ -107,6 +108,118 @@ def test_operator_can_set_up_a_clinic_and_grant_module_access(api_client):
 
 
 @pytest.mark.django_db
+def test_operator_clinic_create_bootstraps_permissions_and_default_roles(api_client):
+    _operator(api_client)
+    clinic = api_client.post(
+        "/api/v1/operator/clinics/",
+        {"name": "Bootstrap Clinic", "code": "bootstrap", "timezone": "UTC", "currency": "USD"},
+        format="json",
+    )
+    assert clinic.status_code == 201, clinic.data
+    assert clinic.data["bootstrap"]["created"] >= 1
+    assert clinic.data["setup"]["has_roles"] is True
+    assert clinic.data["setup"]["has_permissions"] is True
+    assert Role.objects.filter(clinic_id=clinic.data["id"], code="solo-practitioner").exists()
+
+
+@pytest.mark.django_db
+def test_operator_can_provision_a_clinic_person_with_staff(api_client):
+    _operator(api_client)
+    clinic = api_client.post(
+        "/api/v1/operator/clinics/",
+        {"name": "People Clinic", "code": "people", "timezone": "UTC", "currency": "USD"},
+        format="json",
+    )
+    assert clinic.status_code == 201, clinic.data
+    branch = api_client.post(
+        "/api/v1/operator/branches/",
+        {"clinic": clinic.data["id"], "name": "Main", "code": "main"},
+        format="json",
+    )
+    assert branch.status_code == 201, branch.data
+
+    provision = api_client.post(
+        f"/api/v1/operator/clinics/{clinic.data['id']}/people/",
+        {
+            "email": "doctor@example.com",
+            "full_name": "Dr Example",
+            "password": PASSWORD,
+            "role_code": "solo-practitioner",
+            "branch": branch.data["id"],
+            "create_staff": True,
+        },
+        format="json",
+    )
+    assert provision.status_code == 201, provision.data
+    assert provision.data["staff_created"] is True
+    assert provision.data["is_clinical_role"] is True
+    assert Staff.objects.filter(user__email="doctor@example.com", staff_type=Staff.StaffType.DOCTOR).exists()
+    assert DoctorProfile.objects.filter(staff__user__email="doctor@example.com").exists()
+
+    setup = api_client.get(f"/api/v1/operator/clinics/{clinic.data['id']}/setup/")
+    assert setup.status_code == 200, setup.data
+    assert setup.data["has_user"] is True
+    assert setup.data["has_assignment"] is True
+
+
+@pytest.mark.django_db
+def test_operator_branches_can_be_filtered_by_clinic(api_client):
+    _operator(api_client)
+    first = api_client.post(
+        "/api/v1/operator/clinics/",
+        {"name": "Branch Clinic A", "code": "br-a", "timezone": "UTC", "currency": "USD"},
+        format="json",
+    )
+    second = api_client.post(
+        "/api/v1/operator/clinics/",
+        {"name": "Branch Clinic B", "code": "br-b", "timezone": "UTC", "currency": "USD"},
+        format="json",
+    )
+    assert first.status_code == 201, first.data
+    assert second.status_code == 201, second.data
+    branch_a = api_client.post(
+        "/api/v1/operator/branches/",
+        {"clinic": first.data["id"], "name": "Site A", "code": "site-a"},
+        format="json",
+    )
+    branch_b = api_client.post(
+        "/api/v1/operator/branches/",
+        {"clinic": second.data["id"], "name": "Site B", "code": "site-b"},
+        format="json",
+    )
+    assert branch_a.status_code == 201, branch_a.data
+    assert branch_b.status_code == 201, branch_b.data
+
+    scoped = api_client.get(f"/api/v1/operator/branches/?clinic={first.data['id']}")
+    assert scoped.status_code == 200, scoped.data
+    assert len(scoped.data["results"]) == 1
+    assert scoped.data["results"][0]["id"] == branch_a.data["id"]
+
+
+@pytest.mark.django_db
+def test_operator_lists_are_scoped_by_clinic(api_client):
+    _operator(api_client)
+    first = api_client.post(
+        "/api/v1/operator/clinics/",
+        {"name": "Scoped Clinic", "code": "scoped-a", "timezone": "UTC", "currency": "USD"},
+        format="json",
+    )
+    second = api_client.post(
+        "/api/v1/operator/clinics/",
+        {"name": "Other Scoped", "code": "scoped-b", "timezone": "UTC", "currency": "USD"},
+        format="json",
+    )
+    assert first.status_code == 201, first.data
+    assert second.status_code == 201, second.data
+
+    scoped = api_client.get(f"/api/v1/operator/roles/?clinic={first.data['id']}")
+    assert scoped.status_code == 200
+    assert len(scoped.data["results"]) >= 1
+    assert all(row["clinic"] == first.data["id"] for row in scoped.data["results"])
+    assert not any(row["clinic"] == second.data["id"] for row in scoped.data["results"])
+
+
+@pytest.mark.django_db
 def test_operator_can_install_default_roles_for_a_clinic(api_client):
     _operator(api_client)
     clinic = api_client.post(
@@ -116,10 +229,12 @@ def test_operator_can_install_default_roles_for_a_clinic(api_client):
     )
     assert clinic.status_code == 201, clinic.data
 
+    assert clinic.data["bootstrap"]["created"] >= 1
+
     install = api_client.post(f"/api/v1/operator/clinics/{clinic.data['id']}/default-roles/", {}, format="json")
     assert install.status_code == 200, install.data
-    assert install.data["created"] >= 1
-    assert install.data["created_permissions"] >= 1
+    assert install.data["created"] == 0
+    assert install.data["skipped"] >= 1
 
     seeded_codes = set(
         Role.objects.filter(clinic_id=clinic.data["id"]).values_list("code", flat=True)
@@ -329,15 +444,10 @@ def test_operator_can_update_and_deactivate_clinic_records(api_client):
 @pytest.mark.django_db
 def test_operator_can_edit_and_delete_an_empty_clinic(api_client):
     _operator(api_client)
-    clinic = api_client.post(
-        "/api/v1/operator/clinics/",
-        {"name": "Empty Clinic", "code": "empty", "timezone": "UTC", "currency": "USD"},
-        format="json",
-    )
-    assert clinic.status_code == 201, clinic.data
+    empty = Clinic.objects.create(name="Empty Clinic", code="empty", timezone="UTC", currency="USD")
 
     updated = api_client.patch(
-        f"/api/v1/operator/clinics/{clinic.data['id']}/",
+        f"/api/v1/operator/clinics/{empty.id}/",
         {"name": "Renamed Clinic", "timezone": "Asia/Yangon", "currency": "MMK", "is_active": False},
         format="json",
     )
@@ -346,9 +456,9 @@ def test_operator_can_edit_and_delete_an_empty_clinic(api_client):
     assert updated.data["currency"] == "MMK"
     assert updated.data["is_active"] is False
 
-    removed = api_client.delete(f"/api/v1/operator/clinics/{clinic.data['id']}/")
+    removed = api_client.delete(f"/api/v1/operator/clinics/{empty.id}/")
     assert removed.status_code == 204
-    assert Clinic.objects.filter(id=clinic.data["id"]).count() == 0
+    assert Clinic.objects.filter(id=empty.id).count() == 0
 
 
 @pytest.mark.django_db

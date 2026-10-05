@@ -1,7 +1,9 @@
 "use client";
 
-import { AlertTriangle, Calendar, ClipboardList, Phone } from "lucide-react";
+import { AlertTriangle, Calendar, ClipboardList, History, Phone } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
+import { toast } from "sonner";
 
 import { StatusText } from "@/components/record-browser";
 import { DetailField, DetailGrid, DetailSection, DetailTable } from "@/components/detail-fields";
@@ -14,27 +16,52 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { allowed } from "@/features/access/navigation";
 import { RequirePermission } from "@/features/access/require-permission";
 import { useAuth } from "@/features/auth/auth-provider";
+import { PatientVisitHistory } from "@/features/patients/patient-visit-history";
 import { PatientWritePanel } from "@/features/patients/patient-writes";
 import { useDetailQuery } from "@/hooks/use-detail-query";
+import { apiBlob } from "@/lib/api/client";
 import type { Patient, PatientProfile } from "@/lib/api/types";
+import {
+  formatPatientAgeLabel,
+  formatPatientBirthSummary,
+  formatPatientDobLabel,
+  formatSex,
+} from "@/lib/patients/age";
 import { cn } from "@/lib/utils";
 
-function patientAge(dateOfBirth: string) {
-  const born = new Date(dateOfBirth);
-  if (Number.isNaN(born.getTime())) {
-    return null;
-  }
-  const today = new Date();
-  let age = today.getFullYear() - born.getFullYear();
-  const monthDiff = today.getMonth() - born.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < born.getDate())) {
-    age -= 1;
-  }
-  return age;
-}
+function DownloadDocumentButton({
+  patientId,
+  documentId,
+  fileName,
+}: {
+  patientId: string;
+  documentId: string;
+  fileName: string;
+}) {
+  const [pending, setPending] = useState(false);
 
-function formatSex(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  async function download() {
+    setPending(true);
+    try {
+      const blob = await apiBlob(`/patients/${patientId}/documents/${documentId}/file/`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The document could not be downloaded.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => void download()}>
+      {pending ? "Downloading…" : "Download"}
+    </Button>
+  );
 }
 
 function primaryContact(profile: PatientProfile) {
@@ -45,8 +72,15 @@ function activeAllergies(profile: PatientProfile) {
   return profile.allergies.filter((row) => row.status === "active");
 }
 
-function PatientSummary({ patient, profile }: { patient: Patient; profile: PatientProfile }) {
-  const age = patientAge(patient.date_of_birth);
+function PatientSummary({
+  patient,
+  profile,
+  onVisitHistory,
+}: {
+  patient: Patient;
+  profile: PatientProfile;
+  onVisitHistory?: () => void;
+}) {
   const contact = primaryContact(profile);
   const allergies = activeAllergies(profile);
   const severeAllergies = allergies.filter((row) => row.severity === "severe");
@@ -84,8 +118,7 @@ function PatientSummary({ patient, profile }: { patient: Patient; profile: Patie
               <Badge variant="outline">{patient.patient_number}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
-              {age !== null ? `${age} years old` : "Age unknown"} · {formatSex(patient.sex)} · Born{" "}
-              {patient.date_of_birth}
+              {formatPatientBirthSummary(patient)} · {formatSex(patient.sex)}
             </p>
             {contact ? (
               <p className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -99,14 +132,14 @@ function PatientSummary({ patient, profile }: { patient: Patient; profile: Patie
               <p className="text-sm text-muted-foreground">No contact on file</p>
             )}
           </div>
-          <PatientQuickActions patientId={patient.id} />
+          <PatientQuickActions patientId={patient.id} onVisitHistory={onVisitHistory} />
         </CardContent>
       </Card>
     </div>
   );
 }
 
-function PatientQuickActions({ patientId }: { patientId: string }) {
+function PatientQuickActions({ patientId, onVisitHistory }: { patientId: string; onVisitHistory?: () => void }) {
   const { account } = useAuth();
   const permissions = account?.permissions ?? [];
   const actions = [
@@ -115,12 +148,21 @@ function PatientQuickActions({ patientId }: { patientId: string }) {
       href: "/appointments",
       permission: "appointments.create",
       icon: Calendar,
+      onClick: undefined as (() => void) | undefined,
     },
     {
-      label: "Consultation",
+      label: "Visit history",
+      href: "",
+      permission: "encounters.view",
+      icon: History,
+      onClick: onVisitHistory,
+    },
+    {
+      label: "Open visit",
       href: `/patients/${patientId}/consultation`,
       permission: "encounters.view",
       icon: ClipboardList,
+      onClick: undefined as (() => void) | undefined,
     },
   ].filter((action) => allowed(permissions, action.permission));
 
@@ -132,6 +174,14 @@ function PatientQuickActions({ patientId }: { patientId: string }) {
     <div className="flex flex-wrap gap-2">
       {actions.map((action) => {
         const Icon = action.icon;
+        if (action.onClick) {
+          return (
+            <Button key={action.label} type="button" variant="outline" size="sm" onClick={action.onClick}>
+              <Icon className="size-4" aria-hidden="true" />
+              {action.label}
+            </Button>
+          );
+        }
         return (
           <Button key={action.label} asChild variant="outline" size="sm">
             <Link href={action.href}>
@@ -145,15 +195,22 @@ function PatientQuickActions({ patientId }: { patientId: string }) {
   );
 }
 
-export function PatientDetailScreen({ patientId }: { patientId: string }) {
+export function PatientDetailScreen({
+  patientId,
+  initialTab,
+}: {
+  patientId: string;
+  initialTab?: string;
+}) {
   return (
     <RequirePermission permission="patients.view" title="Patient">
-      <PatientDetail patientId={patientId} />
+      <PatientDetail patientId={patientId} initialTab={initialTab} />
     </RequirePermission>
   );
 }
 
-function PatientDetail({ patientId }: { patientId: string }) {
+function PatientDetail({ patientId, initialTab }: { patientId: string; initialTab?: string }) {
+  const [activeTab, setActiveTab] = useState(initialTab ?? "overview");
   const query = useDetailQuery<PatientProfile>("patients", `/patients/${patientId}/profile/`);
   const state = (
     <DetailPageState
@@ -181,13 +238,18 @@ function PatientDetail({ patientId }: { patientId: string }) {
       title={patient.full_name}
       description={`Patient record ${patient.patient_number}`}
     >
-      <PatientSummary patient={patient} profile={profile} />
+      <PatientSummary
+        patient={patient}
+        profile={profile}
+        onVisitHistory={() => setActiveTab("visits")}
+      />
 
-      <Tabs defaultValue="overview" className="mt-8">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-8">
         <TabsList className="h-auto w-full flex-wrap justify-start gap-1">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="visits">Visit history</TabsTrigger>
           <TabsTrigger value="contacts">Contacts & addresses</TabsTrigger>
-          <TabsTrigger value="clinical">Clinical history</TabsTrigger>
+          <TabsTrigger value="clinical">Conditions & allergies</TabsTrigger>
           <TabsTrigger value="documents">Documents</TabsTrigger>
           <TabsTrigger value="manage">Edit record</TabsTrigger>
         </TabsList>
@@ -196,13 +258,20 @@ function PatientDetail({ patientId }: { patientId: string }) {
           <DetailSection title="Demographics">
             <DetailGrid>
               <DetailField label="Patient number" value={patient.patient_number} />
-              <DetailField label="Date of birth" value={patient.date_of_birth} />
-              <DetailField label="Age" value={patientAge(patient.date_of_birth) ?? "—"} />
+              <DetailField
+                label={patient.dob_is_approximate ? "Approximate date of birth" : "Date of birth"}
+                value={formatPatientDobLabel(patient)}
+              />
+              <DetailField label="Age" value={formatPatientAgeLabel(patient)} />
               <DetailField label="Sex" value={formatSex(patient.sex)} />
               <DetailField label="Status" value={<StatusText value={patient.is_active ? "active" : "inactive"} />} />
               <DetailField label="Registered" value={new Date(patient.created_at).toLocaleDateString()} />
             </DetailGrid>
           </DetailSection>
+        </TabsContent>
+
+        <TabsContent value="visits" className="mt-6 space-y-6">
+          <PatientVisitHistory patientId={patient.id} />
         </TabsContent>
 
         <TabsContent value="contacts" className="mt-6 space-y-6">
@@ -276,9 +345,6 @@ function PatientDetail({ patientId }: { patientId: string }) {
 
         <TabsContent value="documents" className="mt-6 space-y-6">
           <DetailSection title="Documents">
-            <p className="mb-4 text-sm text-muted-foreground">
-              Document metadata is stored here. File upload and download are not available yet.
-            </p>
             <DetailTable
               emptyLabel="No documents are recorded."
               rows={documents}
@@ -286,6 +352,17 @@ function PatientDetail({ patientId }: { patientId: string }) {
                 { key: "title", header: "Title", cell: (row) => String(row.title) },
                 { key: "type", header: "Type", cell: (row) => String(row.document_type) },
                 { key: "file", header: "File", cell: (row) => String(row.file_name) },
+                {
+                  key: "download",
+                  header: "",
+                  cell: (row) => (
+                    <DownloadDocumentButton
+                      patientId={patient.id}
+                      documentId={row.id}
+                      fileName={row.file_name}
+                    />
+                  ),
+                },
               ]}
             />
           </DetailSection>

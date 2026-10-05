@@ -22,7 +22,10 @@ export function PatientScreen() {
           <>
             <RowText label="Number" value={row.patient_number} />
             <RowText label="Name" value={row.full_name} />
-            <RowText label="Date of birth" value={row.date_of_birth} />
+            <RowText
+              label={row.dob_is_approximate ? "Approx. birth date" : "Date of birth"}
+              value={row.dob_is_approximate ? `${row.age} yrs (est.)` : row.date_of_birth}
+            />
             <RowText label="Sex" value={row.sex} />
             <StatusRow value={row.is_active ? "active" : "inactive"} />
           </>

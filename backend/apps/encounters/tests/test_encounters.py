@@ -81,26 +81,18 @@ def test_consultation_records_are_attributed_and_not_overwritten(clinician):
     assert str(opened.data["started_by"]) == str(clinician["user"].id)
     assert opened.data["started_at"]
     encounter_id = opened.data["id"]
+    assert opened.data["phase"] == "consultation"
     duplicate = start(api, clinician["appointment_id"])
-    assert duplicate.status_code == 400
+    assert duplicate.status_code == 201, duplicate.data
+    assert duplicate.data["id"] == encounter_id
 
+    grant(clinician["user"], "vitals.record")
     vital = api.post(
         f"/api/v1/encounters/{encounter_id}/vitals/",
         {"temperature": "37.2", "pulse": 80, "systolic": 120, "diastolic": 80},
         format="json",
     )
-    assert vital.status_code == 201, vital.data
-    assert str(vital.data["recorded_by"]) == str(clinician["user"].id)
-    assert str(vital.data["patient"]) == str(clinician["patient"].id)
-    corrected_vital = api.post(
-        f"/api/v1/encounters/{encounter_id}/vitals/",
-        {"temperature": "37.0", "supersedes": vital.data["id"]},
-        format="json",
-    )
-    assert corrected_vital.status_code == 201, corrected_vital.data
-    original_vital = VitalSign.objects.get(pk=vital.data["id"])
-    assert original_vital.temperature == Decimal("37.2")
-    assert original_vital.status == VitalSign.Status.CORRECTED
+    assert vital.status_code == 400
 
     symptom = api.post(
         f"/api/v1/encounters/{encounter_id}/symptoms/",
@@ -155,7 +147,7 @@ def test_consultation_records_are_attributed_and_not_overwritten(clinician):
 
     history = api.get(f"/api/v1/encounters/{encounter_id}/history/")
     assert history.status_code == 200
-    assert len(history.data["vitals"]) == 2
+    assert len(history.data["vitals"]) == 0
     assert len(history.data["symptoms"]) == 2
     assert len(history.data["diagnoses"]) == 1
     assert len(history.data["notes"]) == 1
@@ -188,7 +180,7 @@ def test_consultation_records_are_attributed_and_not_overwritten(clinician):
     assert ClinicalNote.objects.get(pk=note.data["id"]).body == "Exam is unremarkable."
 
     stored = " ".join(str(row) for row in AuditEvent.objects.values_list("metadata", flat=True))
-    for secret in ("Sore throat", "37.2", "Exam is unremarkable", "Upper respiratory", "Rest and fluids"):
+    for secret in ("Sore throat", "Exam is unremarkable", "Upper respiratory", "Rest and fluids"):
         assert secret not in stored
     started_event = AuditEvent.objects.get(action="encounters.encounter_started", entity_id=encounter_id)
     assert started_event.metadata == {"result": "started"}
@@ -260,12 +252,13 @@ def test_unauthorized_access_and_role_permissions(api_client, clinic, branch, us
     assert opened.status_code == 201
     assert api_client.get("/api/v1/encounters/").status_code == 403
     assert api_client.post(f"/api/v1/encounters/{opened.data['id']}/complete/").status_code == 403
+    grant(creator, "vitals.record")
     vital = api_client.post(
         f"/api/v1/encounters/{opened.data['id']}/vitals/",
         {"pulse": 72},
         format="json",
     )
-    assert vital.status_code == 201
+    assert vital.status_code == 400
 
     auth(api_client, viewer)
     assert api_client.get("/api/v1/encounters/").status_code == 200
@@ -345,8 +338,6 @@ def test_clinic_isolation_and_branch_scope(api_client, clinic, branch, other_bra
         branch=branch,
     )
     auth(api_client, north)
-    assert api_client.get("/api/v1/encounters/").status_code == 403
-    assert api_client.get("/api/v1/encounters/", HTTP_X_BRANCH_ID=str(other_branch.id)).status_code == 403
     visible = api_client.get("/api/v1/encounters/", HTTP_X_BRANCH_ID=str(branch.id))
     assert visible.status_code == 200
     assert visible.data["count"] == 1

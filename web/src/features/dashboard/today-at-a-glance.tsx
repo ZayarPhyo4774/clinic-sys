@@ -10,6 +10,7 @@ import { formatMoney } from "@/features/billing/billing-utils";
 import { allowed } from "@/features/access/navigation";
 import { useAuth } from "@/features/auth/auth-provider";
 import { todayIso } from "@/features/reports/report-utils";
+import { clinicTimeZone } from "@/lib/dates/clinic-date";
 import { api, withQuery } from "@/lib/api/client";
 
 type TodaySummary = {
@@ -26,13 +27,15 @@ type TodaySummary = {
 export function TodayAtAGlance() {
   const { account, branchId } = useAuth();
   const canView = account ? allowed(account.permissions, "reports.view") : false;
+  const timeZone = clinicTimeZone(account?.clinic_timezone);
+  const today = todayIso(timeZone);
 
   const query = useQuery({
-    queryKey: ["reports", "summary", "today", branchId],
+    queryKey: ["reports", "summary", "today", branchId, today],
     queryFn: () =>
       api<TodaySummary>(
         withQuery("/reports/summary/", {
-          date: todayIso(),
+          date: today,
         }),
       ),
     enabled: canView && Boolean(branchId),
@@ -47,7 +50,7 @@ export function TodayAtAGlance() {
       <div className="flex items-end justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Today at a glance</h2>
-          <p className="text-sm text-muted-foreground">Live summary from the reports service for {todayIso()}.</p>
+          <p className="text-sm text-muted-foreground">Live summary from the reports service for {today}.</p>
         </div>
         <Link href="/reports" className="text-sm font-medium text-primary underline-offset-4 hover:underline">
           Full reports →

@@ -4,14 +4,17 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import F, IntegerField, OuterRef, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from django.utils import timezone
 from zoneinfo import ZoneInfo
 
 from apps.audit.services import client_ip, record_audit_event
 from apps.clinics.scoping import apply_clinic_scope, header_branch_id, parse_bool, parse_uuid
+from apps.pharmacy.import_services import import_medicines, parse_medicine_csv
 from apps.pharmacy.models import Medicine, MedicineBatch, MedicineCategory, StockTransaction, Supplier
 from apps.pharmacy.pagination import PharmacyPagination
 from apps.pharmacy.permissions import PharmacyPermission
@@ -127,7 +130,10 @@ class MedicineViewSet(_CatalogViewSet):
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["name", "code"]
     ordering_fields = ["name", "created_at"]
-    permission_map = MedicineCategoryViewSet.permission_map
+    permission_map = {
+        **MedicineCategoryViewSet.permission_map,
+        "bulk_import": "pharmacy.manage",
+    }
 
     def get_queryset(self):
         today = _today(self.request)
@@ -173,6 +179,61 @@ class MedicineViewSet(_CatalogViewSet):
         medicine = self.perform_create(serializer)
         medicine = self.get_queryset().get(pk=medicine.pk)
         return Response(self.get_serializer(medicine).data, status=201)
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-import",
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
+    )
+    def bulk_import(self, request, **kwargs):
+        if not request.user.clinic_id:
+            raise DRFValidationError("User is not assigned to a clinic.")
+
+        create_missing_categories = parse_bool(
+            request.data.get("create_missing_categories"),
+            "create_missing_categories",
+        )
+        if create_missing_categories is None:
+            create_missing_categories = True
+        skip_duplicates = parse_bool(request.data.get("skip_duplicates"), "skip_duplicates")
+        if skip_duplicates is None:
+            skip_duplicates = True
+
+        upload = request.FILES.get("file")
+        if upload is not None:
+            rows = run_service(lambda: parse_medicine_csv(upload.read()))
+        elif isinstance(request.data, dict) and isinstance(request.data.get("rows"), list):
+            rows = request.data["rows"]
+        else:
+            raise DRFValidationError({"file": "Upload a CSV file or provide a rows array."})
+
+        result = run_service(
+            lambda: import_medicines(
+                clinic_id=request.user.clinic_id,
+                user=request.user,
+                rows=rows,
+                create_missing_categories=create_missing_categories,
+                skip_duplicates=skip_duplicates,
+            )
+        )
+        if result["created"] or result["categories_created"]:
+            record_audit_event(
+                actor=request.user,
+                action="pharmacy.medicines_bulk_imported",
+                entity_type="pharmacy.Medicine",
+                entity_id=request.user.clinic_id,
+                clinic=request.user.clinic,
+                branch=None,
+                ip_address=client_ip(request),
+                metadata={
+                    "created": result["created"],
+                    "categories_created": result["categories_created"],
+                    "skipped": result["skipped"],
+                    "errors": len(result["errors"]),
+                },
+            )
+        return Response(result)
 
 
 class MedicineBatchViewSet(viewsets.ModelViewSet):

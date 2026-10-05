@@ -55,7 +55,7 @@ class PrescriptionSerializer(DoctorFullNameMixin, serializers.ModelSerializer):
 
 
 class PrescriptionItemSerializer(serializers.ModelSerializer):
-    medicine_unit = serializers.CharField(source="medicine.unit", read_only=True)
+    medicine_unit = serializers.SerializerMethodField()
 
     class Meta:
         model = PrescriptionItem
@@ -66,7 +66,9 @@ class PrescriptionItemSerializer(serializers.ModelSerializer):
             "branch",
             "patient",
             "doctor",
+            "source",
             "medicine",
+            "medicine_name",
             "medicine_unit",
             "quantity",
             "quantity_dispensed",
@@ -90,7 +92,33 @@ class PrescriptionItemSerializer(serializers.ModelSerializer):
             "updated_at",
             "created_by",
         ]
-        extra_kwargs = {"quantity": {"min_value": 1}}
+        extra_kwargs = {
+            "quantity": {"min_value": 1},
+            "medicine": {"required": False, "allow_null": True},
+            "medicine_name": {"required": False, "allow_blank": True},
+        }
+
+    def get_medicine_unit(self, obj):
+        if obj.medicine_id:
+            return obj.medicine.unit
+        return ""
+
+    def validate(self, attrs):
+        source = attrs.get("source", PrescriptionItem.Source.INVENTORY)
+        medicine = attrs.get("medicine")
+        medicine_name = (attrs.get("medicine_name") or "").strip()
+        if source == PrescriptionItem.Source.INVENTORY:
+            if not medicine:
+                raise serializers.ValidationError({"medicine": "Medicine is required for inventory items."})
+            attrs["medicine_name"] = ""
+        else:
+            if medicine:
+                raise serializers.ValidationError({"medicine": "External items cannot reference clinic inventory."})
+            if not medicine_name:
+                raise serializers.ValidationError({"medicine_name": "Medicine name is required for external items."})
+            attrs["medicine"] = None
+            attrs["medicine_name"] = medicine_name
+        return attrs
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

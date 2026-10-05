@@ -36,7 +36,10 @@ from apps.encounters.serializers import (
     TreatmentPlanSerializer,
     VitalSignSerializer,
 )
-from apps.encounters.services import complete_encounter
+from apps.encounters.phase import ensure_consultation_phase, ensure_triage_phase
+from apps.encounters.consultation_meta_serializers import EncounterConsultationMetaSerializer
+from apps.encounters.consultation_meta_services import get_or_create_consultation_meta, upsert_consultation_meta
+from apps.encounters.services import complete_encounter, mark_vitals_recorded
 from apps.encounters.vital_units import vital_units_payload
 
 
@@ -90,13 +93,14 @@ class EncounterViewSet(viewsets.ModelViewSet):
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["patient__patient_number", "patient__full_name"]
     ordering_fields = ["started_at", "created_at"]
-    http_method_names = ["get", "post", "head", "options"]
+    http_method_names = ["get", "post", "patch", "head", "options"]
     permission_map = {
         "list": "encounters.view",
         "retrieve": "encounters.view",
         "history": "encounters.view",
         "create": "encounters.create",
         "complete": "encounters.update",
+        "consultation_meta": ("encounters.view", "encounters.create"),
     }
 
     def get_queryset(self):
@@ -140,14 +144,21 @@ class EncounterViewSet(viewsets.ModelViewSet):
         return super().filter_queryset(queryset)
 
     def perform_create(self, serializer):
-        encounter = run_service(lambda: serializer.save(started_by=self.request.user))
-        audit(self.request, encounter, "encounters.Encounter", "encounters.encounter_started", "started")
-        return encounter
+        return run_service(lambda: serializer.save(started_by=self.request.user))
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        appointment = serializer.validated_data["appointment"]
+        existing = Encounter.objects.filter(
+            appointment_id=appointment.pk,
+            status=Encounter.Status.OPEN,
+        ).first()
+        if existing is not None:
+            output = EncounterSerializer(existing, context={"request": request})
+            return Response(output.data, status=201)
         encounter = self.perform_create(serializer)
+        audit(request, encounter, "encounters.Encounter", "encounters.encounter_started", "started")
         output = EncounterSerializer(encounter, context={"request": request})
         return Response(output.data, status=201)
 
@@ -161,9 +172,14 @@ class EncounterViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def history(self, request, pk=None, **kwargs):
         encounter = self.get_object()
+        meta = get_or_create_consultation_meta(encounter, user=request.user)
         return Response(
             {
                 "encounter": EncounterSerializer(encounter, context={"request": request}).data,
+                "consultation_meta": EncounterConsultationMetaSerializer(
+                    meta,
+                    context={"request": request, "encounter": encounter},
+                ).data,
                 "vitals": VitalSignSerializer(encounter.vitalsign_entries.all(), many=True).data,
                 "symptoms": SymptomSerializer(encounter.symptom_entries.all(), many=True).data,
                 "diagnoses": DiagnosisSerializer(encounter.diagnosis_entries.all(), many=True).data,
@@ -171,6 +187,27 @@ class EncounterViewSet(viewsets.ModelViewSet):
                 "treatment_plans": TreatmentPlanSerializer(encounter.treatmentplan_entries.all(), many=True).data,
                 "follow_ups": FollowUpSerializer(encounter.followup_entries.all(), many=True).data,
             }
+        )
+
+    @action(detail=True, methods=["get", "patch"], url_path="consultation-meta")
+    def consultation_meta(self, request, pk=None, **kwargs):
+        encounter = self.get_object()
+        if request.method == "GET":
+            meta = get_or_create_consultation_meta(encounter, user=request.user)
+            return Response(
+                EncounterConsultationMetaSerializer(meta, context={"request": request, "encounter": encounter}).data
+            )
+        meta = get_or_create_consultation_meta(encounter, user=request.user)
+        serializer = EncounterConsultationMetaSerializer(
+            meta,
+            data=request.data,
+            partial=True,
+            context={"request": request, "encounter": encounter},
+        )
+        serializer.is_valid(raise_exception=True)
+        meta = run_service(lambda: upsert_consultation_meta(encounter, user=request.user, data=serializer.validated_data))
+        return Response(
+            EncounterConsultationMetaSerializer(meta, context={"request": request, "encounter": encounter}).data
         )
 
 
@@ -200,9 +237,13 @@ class EncounterChildViewSet(viewsets.ModelViewSet):
         return self.queryset.filter(encounter=self.get_encounter())
 
     def perform_create(self, serializer):
-        row = run_service(
-            lambda: serializer.save(encounter=self.get_encounter(), recorded_by=self.request.user)
-        )
+        encounter = self.get_encounter()
+
+        def save():
+            ensure_consultation_phase(encounter)
+            return serializer.save(encounter=encounter, recorded_by=self.request.user)
+
+        row = run_service(save)
         result = "corrected" if row.supersedes_id else "created"
         audit(self.request, row, self.audit_entity, self.audit_action, result)
 
@@ -212,6 +253,24 @@ class VitalSignViewSet(EncounterChildViewSet):
     serializer_class = VitalSignSerializer
     audit_entity = "encounters.VitalSign"
     audit_action = "encounters.vital_recorded"
+    permission_map = {
+        "list": "encounters.view",
+        "retrieve": "encounters.view",
+        "create": "vitals.record",
+    }
+
+    def perform_create(self, serializer):
+        encounter = self.get_encounter()
+        serializer.context["encounter"] = encounter
+
+        def save():
+            ensure_triage_phase(encounter)
+            return serializer.save(encounter=encounter, recorded_by=self.request.user)
+
+        row = run_service(save)
+        mark_vitals_recorded(encounter.appointment_id)
+        result = "corrected" if row.supersedes_id else "created"
+        audit(self.request, row, self.audit_entity, self.audit_action, result)
 
 
 class SymptomViewSet(EncounterChildViewSet):
@@ -254,4 +313,5 @@ class VitalUnitsView(APIView):
     required_permission = "encounters.view"
 
     def get(self, request, **kwargs):
-        return Response(vital_units_payload())
+        clinic = request.user.clinic if request.user.is_authenticated else None
+        return Response(vital_units_payload(clinic))

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -411,6 +412,40 @@ def test_dispensing_deducts_stock_and_stops_at_the_limits(counter):
 
 
 @pytest.mark.django_db
+def test_external_prescription_item_cannot_be_dispensed(counter):
+    api = counter.api
+    medicine = _medicine(api, reorder=0)
+    batch = _batch(api, counter.branch, medicine["id"], quantity=5)
+    encounter_id, _patient, _doctor, _appointment_id = _open_encounter(api, counter.branch, counter.clinic)
+
+    created = api.post("/api/v1/prescriptions/", {"encounter": str(encounter_id)}, format="json")
+    assert created.status_code == 201, created.data
+    item = api.post(
+        f"/api/v1/prescriptions/{created.data['id']}/items/",
+        {
+            "source": "external",
+            "medicine_name": "Outside Pharmacy Tab",
+            "quantity": 1,
+            "dosage": "1 tab nightly",
+            "frequency": "daily",
+        },
+        format="json",
+    )
+    assert item.status_code == 201, item.data
+    assert item.data["source"] == "external"
+    assert item.data["medicine"] is None
+    assert item.data["medicine_name"] == "Outside Pharmacy Tab"
+
+    blocked = api.post(
+        f"/api/v1/prescriptions/{created.data['id']}/items/{item.data['id']}/dispense/",
+        {"batch": batch["id"], "quantity": 1},
+        format="json",
+    )
+    assert blocked.status_code == 400
+    assert "external" in str(blocked.data).lower()
+
+
+@pytest.mark.django_db
 def test_pharmacy_permissions_and_clinic_branch_isolation(api_client, clinic, other_clinic, branch, other_branch, user):
     grant(user, *PHARMACY)
     auth(api_client, user)
@@ -527,3 +562,147 @@ def test_pharmacy_permissions_and_clinic_branch_isolation(api_client, clinic, ot
     anonymous = type(api_client)()
     assert anonymous.get("/api/v1/medicines/").status_code == 401
     assert anonymous.get("/api/v1/prescriptions/").status_code == 401
+
+
+def _csv_upload(*rows: str) -> SimpleUploadedFile:
+    header = "category_code,category_name,name,code,form,strength,unit,reorder_level,is_active"
+    payload = "\n".join([header, *rows]).encode()
+    return SimpleUploadedFile("medicines.csv", payload, content_type="text/csv")
+
+
+@pytest.mark.django_db
+def test_bulk_import_medicines_creates_rows_and_skips_duplicates(counter):
+    api = counter.api
+    response = api.post(
+        "/api/v1/medicines/bulk-import/",
+        {
+            "file": _csv_upload(
+                "analgesics,Analgesics,Paracetamol,paracetamol-500,tablet,500mg,tablet,50,true",
+                "analgesics,Analgesics,Ibuprofen,ibuprofen-400,tablet,400mg,tablet,30,true",
+            ),
+            "create_missing_categories": "true",
+        },
+        format="multipart",
+    )
+    assert response.status_code == 200, response.data
+    assert response.data["created"] == 2
+    assert response.data["skipped"] == 0
+    assert response.data["errors"] == []
+
+    again = api.post(
+        "/api/v1/medicines/bulk-import/",
+        {
+            "file": _csv_upload(
+                "analgesics,Analgesics,Paracetamol,paracetamol-500,tablet,500mg,tablet,50,true",
+                "analgesics,Analgesics,Naproxen,naproxen-250,tablet,250mg,tablet,20,true",
+            ),
+            "skip_duplicates": "true",
+            "create_missing_categories": "true",
+        },
+        format="multipart",
+    )
+    assert again.status_code == 200, again.data
+    assert again.data["created"] == 1
+    assert again.data["skipped"] == 1
+
+    listed = api.get("/api/v1/medicines/?search=paracetamol")
+    assert listed.status_code == 200
+    assert listed.data["count"] == 1
+
+
+@pytest.mark.django_db
+def test_bulk_import_medicines_reports_row_errors(counter):
+    api = counter.api
+    category = api.post("/api/v1/medicine-categories/", {"name": "Antibiotics", "code": "abx"}, format="json")
+    assert category.status_code == 201, category.data
+
+    response = api.post(
+        "/api/v1/medicines/bulk-import/",
+        {
+            "file": _csv_upload(
+                "abx,Antibiotics,Valid Medicine,valid-med,tablet,500mg,tablet,0,true",
+                "missing,Missing,Bad Medicine,bad-med,tablet,500mg,tablet,0,true",
+                "abx,Antibiotics,,no-code,tablet,500mg,tablet,0,true",
+            ),
+            "create_missing_categories": "false",
+        },
+        format="multipart",
+    )
+    assert response.status_code == 200, response.data
+    assert response.data["created"] == 1
+    assert len(response.data["errors"]) == 2
+
+
+@pytest.mark.django_db
+def test_bulk_import_creates_category_from_spaced_code_and_category_column(counter):
+    api = counter.api
+    response = api.post(
+        "/api/v1/medicines/bulk-import/",
+        {
+            "file": SimpleUploadedFile(
+                "medicines.csv",
+                (
+                    "category,category_name,name,code,form,strength,unit\n"
+                    "Pain Meds,Pain Meds,Paracetamol,paracetamol-500,tablet,500mg,tablet\n"
+                ).encode(),
+                content_type="text/csv",
+            ),
+            "create_missing_categories": "true",
+        },
+        format="multipart",
+    )
+    assert response.status_code == 200, response.data
+    assert response.data["created"] == 1
+    assert response.data["categories_created"] == 1
+
+    categories = api.get("/api/v1/medicine-categories/?search=pain")
+    assert categories.status_code == 200
+    assert categories.data["count"] == 1
+    assert categories.data["results"][0]["code"] == "pain-meds"
+
+
+@pytest.mark.django_db
+def test_pharmacy_report_ledger_tracks_used_and_remaining(counter):
+    from apps.reports.services.pharmacy import build_pharmacy_report
+
+    api = counter.api
+    medicine = _medicine(api, code="para-ledger", name="Paracetamol", reorder=5)
+    batch = _batch(api, counter.branch, medicine["id"], quantity=20)
+    encounter_id, _patient, _doctor, _appointment_id = _open_encounter(api, counter.branch, counter.clinic)
+    _prescription, item = _prescribe(api, encounter_id, medicine["id"], quantity=6)
+    dispensed = api.post(
+        f"/api/v1/prescriptions/{_prescription['id']}/items/{item['id']}/dispense/",
+        {"batch": batch["id"], "quantity": 6},
+        format="json",
+    )
+    assert dispensed.status_code == 200, dispensed.data
+
+    today = timezone.localdate()
+    report = build_pharmacy_report(
+        clinic_id=counter.clinic.id,
+        branch_id=counter.branch.id,
+        start=today,
+        end=today,
+    )
+    row = next(entry for entry in report["inventory_ledger"] if entry["medicine_code"] == "para-ledger")
+    assert row["opening_balance"] == 0
+    assert row["received"] == 20
+    assert row["used"] == 6
+    assert row["remaining_balance"] == 14
+    assert row["status"] == "in_stock"
+    assert report["ledger_totals"]["used"] == 6
+    assert report["ledger_totals"]["remaining_balance"] == 14
+    assert report["movement_summary"]["used_units"] == 6
+
+    tomorrow = today + timedelta(days=1)
+    later = build_pharmacy_report(
+        clinic_id=counter.clinic.id,
+        branch_id=counter.branch.id,
+        start=tomorrow,
+        end=tomorrow,
+    )
+    later_row = next(entry for entry in later["inventory_ledger"] if entry["medicine_code"] == "para-ledger")
+    assert later_row["opening_balance"] == 14
+    assert later_row["received"] == 0
+    assert later_row["used"] == 0
+    assert later_row["remaining_balance"] == 14

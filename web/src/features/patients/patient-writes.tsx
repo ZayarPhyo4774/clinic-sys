@@ -20,13 +20,20 @@ import {
 } from "@/components/ui/select";
 import { allowed } from "@/features/access/navigation";
 import { useAuth } from "@/features/auth/auth-provider";
+import { PatientBirthFields } from "@/features/patients/patient-birth-fields";
 import {
   allergySeverityOptions,
   contactKindOptions,
   documentTypeOptions,
   sexOptions,
 } from "@/features/patients/contract";
-import { api } from "@/lib/api/client";
+import {
+  defaultBirthMode,
+  initialAgeValue,
+  type PatientBirthMode,
+} from "@/lib/patients/age";
+import { buildPatientDemographicsPayload } from "@/lib/patients/birth-schema";
+import { api, apiUpload } from "@/lib/api/client";
 import type { Patient, PatientProfile } from "@/lib/api/types";
 import {
   addressEditSchema,
@@ -35,8 +42,8 @@ import {
   allergySchema,
   contactEditSchema,
   contactSchema,
-  documentCreateSchema,
   documentEditSchema,
+  documentUploadSchema,
   historyCorrectSchema,
   historySchema,
   patientDemographicsSchema,
@@ -102,19 +109,21 @@ export function PatientWritePanel({
 function EditDemographicsForm({ patient, onUpdated }: { patient: Patient; onUpdated: () => void }) {
   const queryClient = useQueryClient();
   const [fullName, setFullName] = useState(patient.full_name);
-  const [dateOfBirth, setDateOfBirth] = useState(patient.date_of_birth);
+  const [birthMode, setBirthMode] = useState<PatientBirthMode>(defaultBirthMode(patient));
+  const [dateOfBirth, setDateOfBirth] = useState(
+    patient.dob_is_approximate ? "" : patient.date_of_birth,
+  );
+  const [age, setAge] = useState(initialAgeValue(patient));
   const [sex, setSex] = useState(patient.sex);
   const [error, setError] = useState<unknown>(null);
 
   const mutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (payload: Record<string, string | number>) => {
       requireOnlineMutation("patients.update", isOnline());
       return api<Patient>(`/patients/${patient.id}/`, {
         method: "PATCH",
         body: JSON.stringify({
-          full_name: fullName,
-          date_of_birth: dateOfBirth,
-          sex,
+          ...payload,
           version: patient.version,
         }),
       });
@@ -131,10 +140,15 @@ function EditDemographicsForm({ patient, onUpdated }: { patient: Patient; onUpda
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-    if (!validateForm(patientDemographicsSchema, { full_name: fullName, date_of_birth: dateOfBirth, sex }, setError)) {
+    const validated = validateForm(
+      patientDemographicsSchema,
+      { full_name: fullName, birth_mode: birthMode, date_of_birth: dateOfBirth, age, sex },
+      setError,
+    );
+    if (!validated) {
       return;
     }
-    mutation.mutate();
+    mutation.mutate(buildPatientDemographicsPayload(validated));
   }
 
   return (
@@ -144,9 +158,17 @@ function EditDemographicsForm({ patient, onUpdated }: { patient: Patient; onUpda
         <Label htmlFor="edit_full_name">Full name</Label>
         <Input id="edit_full_name" value={fullName} onChange={(event) => setFullName(event.target.value)} />
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="edit_dob">Date of birth</Label>
-        <Input id="edit_dob" type="date" value={dateOfBirth} onChange={(event) => setDateOfBirth(event.target.value)} />
+      <div className="md:col-span-2">
+        <PatientBirthFields
+          idPrefix="edit"
+          mode={birthMode}
+          onModeChange={setBirthMode}
+          dateOfBirth={dateOfBirth}
+          onDateOfBirthChange={setDateOfBirth}
+          age={age}
+          onAgeChange={setAge}
+          error={error}
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="edit_sex">Sex</Label>
@@ -792,36 +814,24 @@ function AddDocumentForm({ patientId, onUpdated }: { patientId: string; onUpdate
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [documentType, setDocumentType] = useState("other");
-  const [fileName, setFileName] = useState("");
-  const [contentType, setContentType] = useState("application/pdf");
-  const [byteSize, setByteSize] = useState("");
-  const [storageKey, setStorageKey] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<unknown>(null);
 
   const mutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (uploadFile: File) => {
       requireOnlineMutation("patients.document_create", isOnline());
-      return api(`/patients/${patientId}/documents/`, {
-        method: "POST",
-        body: JSON.stringify({
-          title,
-          document_type: documentType,
-          file_name: fileName,
-          content_type: contentType,
-          byte_size: byteSize ? Number(byteSize) : undefined,
-          storage_key: storageKey,
-        }),
-      });
+      const formData = new FormData();
+      formData.append("title", title);
+      formData.append("document_type", documentType);
+      formData.append("file", uploadFile);
+      return apiUpload(`/patients/${patientId}/documents/`, formData);
     },
     onSuccess: async () => {
       setTitle("");
       setDocumentType("other");
-      setFileName("");
-      setContentType("application/pdf");
-      setByteSize("");
-      setStorageKey("");
+      setFile(null);
       setError(null);
-      toast.success("Document metadata recorded.");
+      toast.success("Document uploaded.");
       await queryClient.invalidateQueries({ queryKey: ["patients"] });
       onUpdated();
     },
@@ -831,21 +841,18 @@ function AddDocumentForm({ patientId, onUpdated }: { patientId: string; onUpdate
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-    if (
-      !validateForm(
-        documentCreateSchema,
-        { title, document_type: documentType, file_name: fileName, storage_key: storageKey },
-        setError,
-      )
-    ) {
+    if (!validateForm(documentUploadSchema, { title, document_type: documentType, file }, setError)) {
       return;
     }
-    mutation.mutate();
+    if (!file) {
+      return;
+    }
+    mutation.mutate(file);
   }
 
   return (
     <form className="grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-2" onSubmit={onSubmit}>
-      <p className="text-sm font-medium md:col-span-2">Add document metadata</p>
+      <p className="text-sm font-medium md:col-span-2">Upload document</p>
       <div className="space-y-2">
         <Label htmlFor={`doc_title_${patientId}`}>Title</Label>
         <Input id={`doc_title_${patientId}`} value={title} onChange={(event) => setTitle(event.target.value)} />
@@ -865,30 +872,20 @@ function AddDocumentForm({ patientId, onUpdated }: { patientId: string; onUpdate
           </SelectContent>
         </Select>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor={`doc_file_${patientId}`}>File name</Label>
-        <Input id={`doc_file_${patientId}`} value={fileName} onChange={(event) => setFileName(event.target.value)} />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor={`doc_content_type_${patientId}`}>Content type</Label>
+      <div className="space-y-2 md:col-span-2">
+        <Label htmlFor={`doc_file_${patientId}`}>File</Label>
         <Input
-          id={`doc_content_type_${patientId}`}
-          value={contentType}
-          onChange={(event) => setContentType(event.target.value)}
+          id={`doc_file_${patientId}`}
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,application/pdf,image/*"
+          onChange={(event) => setFile(event.target.files?.[0] ?? null)}
         />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor={`doc_size_${patientId}`}>Byte size</Label>
-        <Input id={`doc_size_${patientId}`} inputMode="numeric" value={byteSize} onChange={(event) => setByteSize(event.target.value)} />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor={`doc_storage_${patientId}`}>Storage key</Label>
-        <Input id={`doc_storage_${patientId}`} value={storageKey} onChange={(event) => setStorageKey(event.target.value)} />
-        <FormFieldError error={error} name="storage_key" />
+        <p className="text-xs text-muted-foreground">PDF, images, or Word documents up to 10 MB.</p>
+        <FormFieldError error={error} name="file" />
       </div>
       <div className="md:col-span-2">
         <Button type="submit" size="sm" disabled={mutation.isPending}>
-          {mutation.isPending ? "Adding…" : "Add document"}
+          {mutation.isPending ? "Uploading…" : "Upload document"}
         </Button>
       </div>
       <div className="md:col-span-2">

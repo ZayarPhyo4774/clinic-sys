@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from apps.appointments.models import Appointment
 from apps.appointments.services import lock_visit
+from apps.encounters.services import begin_consultation_phase, start_triage_encounter
 from apps.queues.models import QueueEntry
 
 
@@ -46,6 +47,20 @@ def create_queue_entry(appointment_id, *, created_by=None) -> QueueEntry:
         return entry
 
 
+def start_triage(entry_id, user):
+    with transaction.atomic():
+        entry, appointment = _lock_entry(entry_id)
+        if entry.status != QueueEntry.Status.WAITING:
+            raise ValidationError({"status": "Triage can only start while the patient is waiting."})
+        if appointment.status != Appointment.Status.IN_QUEUE:
+            _reject()
+        start_triage_encounter(appointment.pk, user)
+        if entry.triage_started_at is None:
+            entry.triage_started_at = timezone.now()
+            entry.save(update_fields=["triage_started_at", "updated_at"])
+        return entry
+
+
 def call_queue_entry(entry_id) -> QueueEntry:
     with transaction.atomic():
         entry, appointment = _lock_entry(entry_id)
@@ -65,7 +80,7 @@ def call_queue_entry(entry_id) -> QueueEntry:
         return entry
 
 
-def start_consultation(entry_id) -> QueueEntry:
+def start_consultation(entry_id, *, user) -> QueueEntry:
     with transaction.atomic():
         entry, appointment = _lock_entry(entry_id)
         if entry.status != QueueEntry.Status.CALLED or appointment.status != Appointment.Status.IN_QUEUE:
@@ -75,6 +90,7 @@ def start_consultation(entry_id) -> QueueEntry:
         entry.status = QueueEntry.Status.IN_SERVICE
         entry.started_at = timezone.now()
         entry.save(update_fields=["status", "started_at", "updated_at"])
+        begin_consultation_phase(appointment.pk, user)
         return entry
 
 

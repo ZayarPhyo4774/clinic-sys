@@ -1,4 +1,12 @@
 import type { VitalUnitField, VitalUnitFieldName } from "@/lib/api/types";
+import { convertVitalFieldFromStorage } from "@/lib/vitals/convert";
+import {
+  VITAL_GRID_COLUMNS,
+  vitalGridCellValue,
+  vitalGridColumnKey,
+  vitalGridColumnLabel,
+  vitalGridPrintValue,
+} from "@/lib/vitals/grid";
 
 export const DEFAULT_VITAL_UNITS: VitalUnitField[] = [
   {
@@ -92,11 +100,21 @@ export function vitalColumnHeader(field: VitalUnitField) {
 
 export type VitalRowValues = Partial<Record<VitalUnitFieldName, string | number | null>>;
 
+export function computeBmi(weightKg: string | null, heightCm: string | null) {
+  const weight = weightKg ? Number(weightKg) : NaN;
+  const height = heightCm ? Number(heightCm) / 100 : NaN;
+  if (!Number.isFinite(weight) || !Number.isFinite(height) || height <= 0) {
+    return null;
+  }
+  return (weight / (height * height)).toFixed(1);
+}
+
 export function formatVitalValue(field: VitalUnitField, value: string | number | null | undefined) {
   if (value === null || value === undefined || value === "") {
     return "—";
   }
-  return field.unit ? `${value} ${field.unit}` : String(value);
+  const displayValue = convertVitalFieldFromStorage(field.field, value, field.unit);
+  return field.unit ? `${displayValue} ${field.unit}` : String(displayValue);
 }
 
 export function formatBloodPressure(
@@ -116,126 +134,24 @@ export function vitalSnapshotItems(
   fields: VitalUnitField[],
   bmi: string | null,
 ) {
-  const byField = vitalUnitsMap(fields);
-  const temperature = byField.get("temperature");
-  const pulse = byField.get("pulse");
-  const respiratoryRate = byField.get("respiratory_rate");
-  const spo2 = byField.get("spo2");
-  const weight = byField.get("weight_kg");
-  const height = byField.get("height_cm");
-  const bpUnit = byField.get("systolic")?.unit ?? "mmHg";
-
-  return [
-    {
-      label: temperature?.short_label ?? "Temp",
-      value: temperature ? formatVitalValue(temperature, row.temperature ?? null) : String(row.temperature ?? "—"),
-    },
-    {
-      label: pulse?.short_label ?? "Pulse",
-      value: pulse ? formatVitalValue(pulse, row.pulse ?? null) : String(row.pulse ?? "—"),
-    },
-    {
-      label: respiratoryRate?.short_label ?? "RR",
-      value: respiratoryRate
-        ? formatVitalValue(respiratoryRate, row.respiratory_rate ?? null)
-        : String(row.respiratory_rate ?? "—"),
-    },
-    {
-      label: "BP",
-      value: formatBloodPressure(row.systolic ?? null, row.diastolic ?? null, bpUnit),
-    },
-    {
-      label: spo2?.short_label ?? "SpO₂",
-      value: spo2 ? formatVitalValue(spo2, row.spo2 ?? null) : String(row.spo2 ?? "—"),
-    },
-    {
-      label: weight?.short_label ?? "Weight",
-      value: weight ? formatVitalValue(weight, row.weight_kg ?? null) : String(row.weight_kg ?? "—"),
-    },
-    {
-      label: height?.short_label ?? "Height",
-      value: height ? formatVitalValue(height, row.height_cm ?? null) : String(row.height_cm ?? "—"),
-    },
-    { label: "BMI", value: bmi ?? "—" },
-  ];
-}
-
-const VITAL_TABLE_FIELD_ORDER: VitalUnitFieldName[] = [
-  "temperature",
-  "pulse",
-  "respiratory_rate",
-  "spo2",
-  "weight_kg",
-  "height_cm",
-];
-
-function bloodPressureUnit(fields: VitalUnitField[]) {
-  return vitalUnitsMap(fields).get("systolic")?.unit ?? "mmHg";
-}
-
-function bloodPressureColumn(fields: VitalUnitField[]) {
-  const bpUnit = bloodPressureUnit(fields);
-  return {
-    key: "bp",
-    header: bpUnit ? `BP (${bpUnit})` : "BP",
-    cell: (row: VitalRowValues) =>
-      formatBloodPressure(row.systolic ?? null, row.diastolic ?? null, bpUnit),
-  };
+  return VITAL_GRID_COLUMNS.map((column) => ({
+    label: vitalGridColumnLabel(column, fields).replace(/\s*\([^)]+\)/, ""),
+    value: vitalGridCellValue(column, row, fields, bmi),
+  }));
 }
 
 export function vitalHistoryTableColumns(fields: VitalUnitField[]) {
-  const byField = vitalUnitsMap(fields);
-  const columns = VITAL_TABLE_FIELD_ORDER.flatMap((fieldName) => {
-    const field = byField.get(fieldName);
-    if (!field) {
-      return [];
-    }
-    const column = {
-      key: field.field,
-      header: vitalColumnHeader(field),
-      cell: (row: VitalRowValues) => formatVitalValue(field, row[field.field] ?? null),
-    };
-    if (fieldName === "respiratory_rate") {
-      return [column, bloodPressureColumn(fields)];
-    }
-    return [column];
-  });
-  return columns;
+  return VITAL_GRID_COLUMNS.map((column) => ({
+    key: vitalGridColumnKey(column),
+    header: vitalGridColumnLabel(column, fields),
+    cell: (row: VitalRowValues) => vitalGridCellValue(column, row, fields),
+  }));
 }
 
 export function vitalPrintHeaders(fields: VitalUnitField[]) {
-  const byField = vitalUnitsMap(fields);
-  const bpUnit = bloodPressureUnit(fields);
-  const headers = VITAL_TABLE_FIELD_ORDER.flatMap((fieldName) => {
-    const field = byField.get(fieldName);
-    if (!field) {
-      return [];
-    }
-    const header = vitalColumnHeader(field);
-    if (fieldName === "respiratory_rate") {
-      return [header, bpUnit ? `BP (${bpUnit})` : "BP"];
-    }
-    return [header];
-  });
-  return headers;
+  return VITAL_GRID_COLUMNS.map((column) => vitalGridColumnLabel(column, fields));
 }
 
-export function vitalPrintRow(row: VitalRowValues, fields: VitalUnitField[]) {
-  const byField = vitalUnitsMap(fields);
-  const bpUnit = bloodPressureUnit(fields);
-  return VITAL_TABLE_FIELD_ORDER.flatMap((fieldName) => {
-    const field = byField.get(fieldName);
-    if (!field) {
-      return [];
-    }
-    const value = row[field.field] ?? null;
-    const formatted = value === null || value === "" ? "—" : String(value);
-    if (fieldName === "respiratory_rate") {
-      return [
-        formatted,
-        formatBloodPressure(row.systolic ?? null, row.diastolic ?? null, bpUnit),
-      ];
-    }
-    return [formatted];
-  });
+export function vitalPrintRow(row: VitalRowValues, fields: VitalUnitField[], bmi: string | null = null) {
+  return VITAL_GRID_COLUMNS.map((column) => vitalGridPrintValue(column, row, fields, bmi));
 }

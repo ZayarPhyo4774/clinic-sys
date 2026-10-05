@@ -101,14 +101,16 @@ export function AddPrescriptionItemForm({
 }) {
   const { account } = useAuth();
   const queryClient = useQueryClient();
+  const [source, setSource] = useState<"inventory" | "external">("inventory");
   const [medicine, setMedicine] = useState("");
-  const [quantity, setQuantity] = useState("");
+  const [medicineName, setMedicineName] = useState("");
+  const [quantity, setQuantity] = useState("1");
   const [dosage, setDosage] = useState("");
   const [frequency, setFrequency] = useState("");
   const [durationDays, setDurationDays] = useState("");
   const [error, setError] = useState<unknown>(null);
   const { unitFor } = useMedicineLabelMap();
-  const selectedUnit = medicine ? unitFor(medicine) : "";
+  const selectedUnit = source === "inventory" && medicine ? unitFor(medicine) : "";
 
   const canAdd = Boolean(
     account &&
@@ -131,8 +133,10 @@ export function AddPrescriptionItemForm({
       return api<PrescriptionItem>(`/prescriptions/${prescriptionId}/items/`, {
         method: "POST",
         body: JSON.stringify({
-          medicine,
-          quantity: Number(quantity),
+          source,
+          medicine: source === "inventory" ? medicine : undefined,
+          medicine_name: source === "external" ? medicineName : undefined,
+          quantity: Number(quantity || 1),
           dosage,
           frequency: frequency || undefined,
           duration_days: durationDays ? Number(durationDays) : undefined,
@@ -140,8 +144,10 @@ export function AddPrescriptionItemForm({
       });
     },
     onSuccess: async () => {
+      setSource("inventory");
       setMedicine("");
-      setQuantity("");
+      setMedicineName("");
+      setQuantity("1");
       setDosage("");
       setFrequency("");
       setDurationDays("");
@@ -170,8 +176,10 @@ export function AddPrescriptionItemForm({
       !validateForm(
         prescriptionItemSchema,
         {
+          source,
           medicine,
-          quantity,
+          medicine_name: medicineName,
+          quantity: quantity || "1",
           dosage,
           frequency,
           duration_days: durationDays ? Number(durationDays) : null,
@@ -187,18 +195,60 @@ export function AddPrescriptionItemForm({
   return (
     <form className="grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-2" onSubmit={onSubmit}>
       <p className="text-sm font-medium md:col-span-2">Add prescription item</p>
-      <MedicineSelect id={`add_rx_medicine_${prescriptionId}`} value={medicine} onValueChange={setMedicine} />
-      <div className="space-y-2">
-        <Label htmlFor={`add_rx_qty_${prescriptionId}`}>
-          Quantity{selectedUnit ? ` (${formatMedicineUnit(selectedUnit, quantity || 2)})` : ""}
-        </Label>
-        <Input
-          id={`add_rx_qty_${prescriptionId}`}
-          inputMode="numeric"
-          value={quantity}
-          onChange={(event) => setQuantity(event.target.value)}
-        />
+      <div className="flex flex-wrap gap-2 md:col-span-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={source === "inventory" ? "default" : "outline"}
+          onClick={() => {
+            setSource("inventory");
+            setMedicine("");
+            setMedicineName("");
+            setQuantity("1");
+          }}
+        >
+          From clinic stock
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={source === "external" ? "default" : "outline"}
+          onClick={() => {
+            setSource("external");
+            setMedicine("");
+            setMedicineName("");
+            setQuantity("1");
+          }}
+        >
+          External / note only
+        </Button>
       </div>
+      {source === "inventory" ? (
+        <MedicineSelect id={`add_rx_medicine_${prescriptionId}`} value={medicine} onValueChange={setMedicine} />
+      ) : (
+        <div className="space-y-2">
+          <Label htmlFor={`add_rx_name_${prescriptionId}`}>Medicine name</Label>
+          <Input
+            id={`add_rx_name_${prescriptionId}`}
+            value={medicineName}
+            placeholder="Name as written for the patient"
+            onChange={(event) => setMedicineName(event.target.value)}
+          />
+        </div>
+      )}
+      {source === "inventory" ? (
+        <div className="space-y-2">
+          <Label htmlFor={`add_rx_qty_${prescriptionId}`}>
+            Quantity{selectedUnit ? ` (${formatMedicineUnit(selectedUnit, quantity || 2)})` : ""}
+          </Label>
+          <Input
+            id={`add_rx_qty_${prescriptionId}`}
+            inputMode="numeric"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </div>
+      ) : null}
       <div className="space-y-2">
         <Label htmlFor={`add_rx_dosage_${prescriptionId}`}>Dosage</Label>
         <Input
@@ -231,6 +281,7 @@ export function AddPrescriptionItemForm({
       </div>
       <div className="md:col-span-2">
         <FormFieldError error={error} name="medicine" />
+        <FormFieldError error={error} name="medicine_name" />
         <FormFieldError error={error} name="quantity" />
         <FormFieldError error={error} name="dosage" />
         <FormError error={error} />
@@ -255,9 +306,15 @@ export function DispenseItemForm({
   const [error, setError] = useState<unknown>(null);
 
   const { unitFor } = useMedicineLabelMap();
-  const unit = item.medicine_unit || unitFor(item.medicine);
+  const unit = item.medicine_unit || (item.medicine ? unitFor(item.medicine) : "");
   const remaining = Number(item.quantity) - Number(item.quantity_dispensed);
-  const canDispense = Boolean(account && allowed(account.permissions, "pharmacy.manage") && remaining > 0);
+  const canDispense = Boolean(
+    account &&
+      item.source !== "external" &&
+      item.medicine &&
+      allowed(account.permissions, "pharmacy.manage") &&
+      remaining > 0,
+  );
   const dispenseReason = !account
     ? "Sign in required."
     : !allowed(account.permissions, "pharmacy.manage")
@@ -316,7 +373,7 @@ export function DispenseItemForm({
 
   return (
     <form className="mt-2 grid gap-2 rounded-md border bg-muted/30 p-3 sm:grid-cols-2 xl:grid-cols-3" onSubmit={onSubmit}>
-      <BatchSelect id={`batch_${item.id}`} medicineId={item.medicine} value={batch} onValueChange={setBatch} />
+      <BatchSelect id={`batch_${item.id}`} medicineId={item.medicine || ""} value={batch} onValueChange={setBatch} />
       <div className="space-y-2">
         <Label htmlFor={`qty_${item.id}`}>
           Quantity{unit ? ` (${formatMedicineUnit(unit, quantity || 2)})` : ""}

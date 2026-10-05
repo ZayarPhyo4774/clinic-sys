@@ -18,6 +18,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import Link from "next/link";
+
 import { allowed } from "@/features/access/navigation";
 import { useAuth } from "@/features/auth/auth-provider";
 import { api } from "@/lib/api/client";
@@ -76,12 +78,14 @@ export function AppointmentActions({
 
   const canUpdate = Boolean(account && allowed(account.permissions, "appointments.update"));
   const canCancel = Boolean(account && allowed(account.permissions, "appointments.cancel"));
+  const canViewEncounter = Boolean(account && allowed(account.permissions, "encounters.view"));
   const canStartEncounter = Boolean(
     account &&
       allowed(account.permissions, "encounters.create") &&
       appointment.status === "in_consultation" &&
       !encounter,
   );
+  const canOpenEncounter = Boolean(canViewEncounter && encounter && appointment.status === "in_consultation");
 
   const mutation = useMutation({
     mutationFn: (action: AppointmentAction) => {
@@ -168,7 +172,7 @@ export function AppointmentActions({
     return canUpdate;
   });
 
-  if (actions.length === 0 && !canStartEncounter) {
+  if (actions.length === 0 && !canStartEncounter && !canOpenEncounter) {
     return null;
   }
 
@@ -213,6 +217,11 @@ export function AppointmentActions({
             {actionLabels[action]}
           </Button>
         ))}
+        {canOpenEncounter && encounter ? (
+          <Button asChild>
+            <Link href={`/consultation/${encounter.id}`}>Open consultation</Link>
+          </Button>
+        ) : null}
         {canStartEncounter ? (
           <Button type="button" disabled={startEncounter.isPending} onClick={() => startEncounter.mutate()}>
             {startEncounter.isPending ? "Starting…" : "Start consultation"}

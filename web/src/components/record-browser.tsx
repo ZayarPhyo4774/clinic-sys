@@ -71,6 +71,7 @@ export function RecordBrowser<T extends { id: string }>({
   rowLabel,
   emptyAction,
   listParams,
+  refetchInterval,
 }: {
   title: string;
   description?: string;
@@ -83,6 +84,7 @@ export function RecordBrowser<T extends { id: string }>({
   rowLabel?: (row: T) => string;
   emptyAction?: React.ReactNode;
   listParams?: Record<string, string | undefined>;
+  refetchInterval?: number;
 }) {
   const router = useRouter();
   const { branchId, account } = useAuth();
@@ -98,6 +100,7 @@ export function RecordBrowser<T extends { id: string }>({
   const query = useQuery({
     queryKey: [resource, { search, page, branchId, listParams }],
     queryFn: () => loadCachedPage<T>({ path: requestPath, userId: account?.id ?? null, branchId }),
+    refetchInterval,
   });
 
   const pageData: Page<T> | undefined = query.data?.page;

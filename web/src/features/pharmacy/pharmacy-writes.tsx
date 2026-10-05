@@ -737,7 +737,7 @@ export function StockOutForm({ medicineId }: { medicineId: string }) {
 
   return (
     <form className="grid gap-4 md:grid-cols-2" onSubmit={onSubmit}>
-      <BatchSelect id="stock_out_batch" medicineId={medicineId} value={batch} onValueChange={setBatch} />
+      <BatchSelect id="stock_out_batch" medicineId={medicineId} value={batch} onValueChange={setBatch} includeInactive />
       <div className="space-y-2">
         <Label htmlFor="stock_out_quantity">Quantity</Label>
         <Input
@@ -864,7 +864,7 @@ export function AdjustStockForm({ medicineId, embedded = false }: { medicineId: 
       onSubmit={onSubmit}
     >
       {!embedded ? <p className="text-sm font-medium md:col-span-2">Adjust stock</p> : null}
-      <BatchSelect id="adjust_batch" medicineId={medicineId} value={batch} onValueChange={setBatch} />
+      <BatchSelect id="adjust_batch" medicineId={medicineId} value={batch} onValueChange={setBatch} includeInactive />
       <div className="space-y-2">
         <Label htmlFor="adjust_direction">Direction</Label>
         <Select value={direction} onValueChange={(value) => setDirection(value as "in" | "out")}>

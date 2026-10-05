@@ -12,10 +12,13 @@ from apps.patients.models import (
     PatientDocument,
     PatientMedicalHistory,
 )
+from apps.patients.demographics import approximate_date_of_birth_from_age, patient_age_in_years
 from apps.patients.services import next_patient_number
 
 
 class PatientSerializer(serializers.ModelSerializer):
+    age = serializers.IntegerField(min_value=0, max_value=150, required=False, write_only=True)
+
     class Meta:
         model = Patient
         fields = [
@@ -25,6 +28,8 @@ class PatientSerializer(serializers.ModelSerializer):
             "branch",
             "full_name",
             "date_of_birth",
+            "dob_is_approximate",
+            "age",
             "sex",
             "is_active",
             "version",
@@ -33,6 +38,9 @@ class PatientSerializer(serializers.ModelSerializer):
             "created_by",
         ]
         read_only_fields = ["id", "patient_number", "clinic", "created_at", "updated_at", "created_by"]
+        extra_kwargs = {
+            "dob_is_approximate": {"read_only": True},
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -48,6 +56,8 @@ class PatientSerializer(serializers.ModelSerializer):
             self.fields["branch"].required = False
         if self.instance is None:
             self.fields["version"].read_only = True
+            self.fields["date_of_birth"].required = False
+            self.fields["date_of_birth"].allow_null = True
         else:
             self.fields["version"].required = True
 
@@ -72,11 +82,43 @@ class PatientSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"branch": "Must match X-Branch-Id."})
         if self.instance is None and branch is not None and not branch.is_active:
             raise serializers.ValidationError({"branch": "Branch is not active."})
+
+        age = attrs.pop("age", serializers.empty)
+        attrs.pop("dob_is_approximate", None)
+        has_age = age is not serializers.empty
+        has_dob = "date_of_birth" in attrs and attrs["date_of_birth"] is not None
+
+        if self.instance is None:
+            if has_age and has_dob:
+                raise serializers.ValidationError("Provide date of birth or age, not both.")
+            if not has_age and not has_dob:
+                raise serializers.ValidationError({"date_of_birth": "Date of birth or age is required."})
+            self._resolved_dob_is_approximate = bool(has_age)
+            if has_age:
+                attrs["date_of_birth"] = approximate_date_of_birth_from_age(age)
+        elif has_age or has_dob:
+            if has_age and has_dob:
+                raise serializers.ValidationError("Provide date of birth or age, not both.")
+            self._resolved_dob_is_approximate = bool(has_age)
+            if has_age:
+                attrs["date_of_birth"] = approximate_date_of_birth_from_age(age)
+
         return attrs
+
+    def _apply_dob_is_approximate(self, validated_data):
+        if hasattr(self, "_resolved_dob_is_approximate"):
+            validated_data["dob_is_approximate"] = self._resolved_dob_is_approximate
+        return validated_data
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["age"] = patient_age_in_years(instance.date_of_birth)
+        return data
 
     def create(self, validated_data):
         branch = validated_data["branch"]
         validated_data["clinic"] = branch.clinic
+        validated_data = self._apply_dob_is_approximate(validated_data)
         with transaction.atomic():
             validated_data["patient_number"] = next_patient_number(branch.clinic)
             validated_data["version"] = 1
@@ -90,6 +132,7 @@ class PatientSerializer(serializers.ModelSerializer):
         expected = validated_data.pop("version")
         if expected != instance.version:
             raise Conflict()
+        validated_data = self._apply_dob_is_approximate(validated_data)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.version = expected + 1

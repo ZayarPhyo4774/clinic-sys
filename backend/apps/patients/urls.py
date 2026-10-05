@@ -73,5 +73,10 @@ urlpatterns = [
         _child(PatientDocumentViewSet, _detail_actions),
         name="patient-document-detail",
     ),
+    path(
+        "patients/<uuid:patient_id>/documents/<uuid:pk>/file/",
+        _child(PatientDocumentViewSet, {"get": "file"}),
+        name="patient-document-file",
+    ),
     *router.urls,
 ]

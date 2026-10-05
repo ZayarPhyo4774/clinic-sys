@@ -64,10 +64,20 @@ class Clinic(models.Model):
 class Branch(models.Model):
     """A site inside one clinic."""
 
+    class InventoryRole(models.TextChoices):
+        STORE = "store", "Store"
+        DISPENSARY = "dispensary", "Dispensary"
+        BOTH = "both", "Store and dispensary"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     clinic = models.ForeignKey(Clinic, on_delete=models.PROTECT, related_name="branches")
     name = models.CharField(max_length=200)
     code = models.SlugField(max_length=50)
+    inventory_role = models.CharField(
+        max_length=20,
+        choices=InventoryRole.choices,
+        default=InventoryRole.BOTH,
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -339,3 +349,97 @@ class NurseProfile(models.Model):
 
     def __str__(self) -> str:
         return self.license_number
+
+
+class ClinicDisabilityType(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(Clinic, on_delete=models.CASCADE, related_name="disability_types")
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    label = models.CharField(max_length=200)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort_order", "label"]
+        constraints = [
+            models.UniqueConstraint(fields=["clinic", "label"], name="uniq_disability_label_per_clinic"),
+        ]
+
+    def clean(self):
+        self.label = (self.label or "").strip()
+        if not self.label:
+            raise ValidationError({"label": "Label is required."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return self.label
+
+
+class ClinicCcrSettings(models.Model):
+    class PopulationType(models.TextChoices):
+        HOST = "host", "Host"
+        IDPS = "idps", "IDPs"
+
+    class IdpLocation(models.TextChoices):
+        FOREST = "forest", "Forest"
+        MONASTERY = "monastery", "Monastery"
+        SCHOOL = "school", "School"
+        OTHER = "other", "Other"
+
+    clinic = models.OneToOneField(Clinic, on_delete=models.CASCADE, related_name="ccr_settings")
+    project_name = models.CharField(max_length=200, blank=True)
+    state_region = models.CharField(max_length=200, blank=True)
+    township_mimu = models.CharField(max_length=200, blank=True)
+    village_mimu = models.CharField(max_length=200, blank=True)
+    population_type = models.CharField(max_length=20, choices=PopulationType.choices, blank=True)
+    idp_location = models.CharField(max_length=20, choices=IdpLocation.choices, blank=True)
+    consultant_name = models.CharField(max_length=200, blank=True)
+    consultant_position = models.CharField(max_length=200, blank=True)
+    required_fields = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        if not isinstance(self.required_fields, list):
+            raise ValidationError({"required_fields": "Must be a list of field keys."})
+        from apps.clinics.ccr_defaults import CONSULTATION_REQUIRED_FIELD_CHOICES
+
+        invalid = [key for key in self.required_fields if key not in CONSULTATION_REQUIRED_FIELD_CHOICES]
+        if invalid:
+            raise ValidationError({"required_fields": f"Unknown required field keys: {', '.join(invalid)}."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"CCR settings for {self.clinic_id}"
+
+
+class ClinicVitalSettings(models.Model):
+    clinic = models.OneToOneField(Clinic, on_delete=models.CASCADE, related_name="vital_settings")
+    units = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        if not isinstance(self.units, dict):
+            raise ValidationError({"units": "Must be a map of field names to unit labels."})
+        from apps.encounters.vital_units import VITAL_UNIT_OPTIONS
+
+        for field, unit in self.units.items():
+            if field not in VITAL_UNIT_OPTIONS:
+                raise ValidationError({"units": f"Unknown vital field: {field}."})
+            if unit not in VITAL_UNIT_OPTIONS[field]:
+                raise ValidationError({"units": f"Invalid unit for {field}: {unit}."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Vital settings for {self.clinic_id}"

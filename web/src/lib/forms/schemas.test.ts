@@ -3,10 +3,23 @@ import { describe, expect, it } from "vitest";
 import { bookAppointmentSchema, registerPatientSchema, vitalsSchema } from "@/lib/forms/schemas";
 
 describe("registerPatientSchema", () => {
-  it("accepts a valid payload", () => {
+  it("accepts a valid payload with date of birth", () => {
     const parsed = registerPatientSchema.safeParse({
       full_name: "Jane Doe",
+      birth_mode: "dob",
       date_of_birth: "1990-01-02",
+      age: "",
+      sex: "female",
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts a valid payload with age only", () => {
+    const parsed = registerPatientSchema.safeParse({
+      full_name: "Jane Doe",
+      birth_mode: "age",
+      date_of_birth: "",
+      age: "45",
       sex: "female",
     });
     expect(parsed.success).toBe(true);
@@ -15,7 +28,9 @@ describe("registerPatientSchema", () => {
   it("requires full name and sex", () => {
     const parsed = registerPatientSchema.safeParse({
       full_name: " ",
+      birth_mode: "dob",
       date_of_birth: "",
+      age: "",
       sex: undefined,
     });
     expect(parsed.success).toBe(false);

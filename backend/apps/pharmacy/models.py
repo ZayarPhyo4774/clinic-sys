@@ -5,11 +5,19 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.text import slugify
 from zoneinfo import ZoneInfo
 
 
 def _lower(value: str) -> str:
     return (value or "").strip().lower()
+
+
+def slug_code(value: str) -> str:
+    cleaned = slugify((value or "").strip(), allow_unicode=False)
+    if not cleaned:
+        raise ValidationError("Code is required.")
+    return cleaned
 
 
 class MedicineCategory(models.Model):
@@ -40,7 +48,7 @@ class MedicineCategory(models.Model):
         if not (self.code or "").strip():
             raise ValidationError({"code": "Code is required."})
         if self.clinic_id and self.code:
-            conflict = MedicineCategory.objects.filter(clinic_id=self.clinic_id, code=_lower(self.code))
+            conflict = MedicineCategory.objects.filter(clinic_id=self.clinic_id, code=slug_code(self.code))
             if self.pk:
                 conflict = conflict.exclude(pk=self.pk)
             if conflict.exists():
@@ -48,7 +56,7 @@ class MedicineCategory(models.Model):
 
     def save(self, *args, **kwargs):
         self.name = (self.name or "").strip()
-        self.code = _lower(self.code)
+        self.code = slug_code(self.code)
         previous = None if self._state.adding or not self.pk else type(self).objects.get(pk=self.pk)
         if previous is not None and previous.code != self.code:
             raise ValidationError({"code": "Code cannot change."})
@@ -112,7 +120,7 @@ class Medicine(models.Model):
         if self._state.adding and self.category_id and not self.category.is_active:
             raise ValidationError({"category": "Category is not active."})
         if self.clinic_id and self.code:
-            conflict = Medicine.objects.filter(clinic_id=self.clinic_id, code=_lower(self.code))
+            conflict = Medicine.objects.filter(clinic_id=self.clinic_id, code=slug_code(self.code))
             if self.pk:
                 conflict = conflict.exclude(pk=self.pk)
             if conflict.exists():
@@ -121,7 +129,7 @@ class Medicine(models.Model):
     def save(self, *args, **kwargs):
         self.name = (self.name or "").strip()
         self.strength = (self.strength or "").strip()
-        self.code = _lower(self.code)
+        self.code = slug_code(self.code)
         if self.category_id:
             self.clinic_id = self.category.clinic_id
         previous = None if self._state.adding or not self.pk else type(self).objects.get(pk=self.pk)
@@ -160,7 +168,7 @@ class Supplier(models.Model):
         if not (self.name or "").strip():
             raise ValidationError({"name": "Name is required."})
         if self.clinic_id and self.code:
-            conflict = Supplier.objects.filter(clinic_id=self.clinic_id, code=_lower(self.code))
+            conflict = Supplier.objects.filter(clinic_id=self.clinic_id, code=slug_code(self.code))
             if self.pk:
                 conflict = conflict.exclude(pk=self.pk)
             if conflict.exists():
@@ -168,7 +176,7 @@ class Supplier(models.Model):
 
     def save(self, *args, **kwargs):
         self.name = (self.name or "").strip()
-        self.code = _lower(self.code)
+        self.code = slug_code(self.code)
         previous = None if self._state.adding or not self.pk else type(self).objects.get(pk=self.pk)
         if previous is not None and previous.code != self.code:
             raise ValidationError({"code": "Code cannot change."})
@@ -278,6 +286,81 @@ class MedicineBatch(models.Model):
         return self.batch_number
 
 
+class GoodsReceiptNote(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        POSTED = "posted", "Posted"
+        CANCELLED = "cancelled", "Cancelled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey("clinics.Clinic", on_delete=models.PROTECT, related_name="goods_receipts")
+    branch = models.ForeignKey("clinics.Branch", on_delete=models.PROTECT, related_name="goods_receipts")
+    supplier = models.ForeignKey(
+        Supplier,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="goods_receipts",
+    )
+    reference_number = models.CharField(max_length=60, blank=True)
+    received_at = models.DateField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    posted_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_goods_receipts",
+    )
+    posted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="posted_goods_receipts",
+    )
+
+    class Meta:
+        ordering = ["-received_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["branch", "reference_number"],
+                condition=~Q(reference_number=""),
+                name="grn_branch_reference_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.reference_number or str(self.id)
+
+
+class GoodsReceiptLine(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    grn = models.ForeignKey(GoodsReceiptNote, on_delete=models.CASCADE, related_name="lines")
+    medicine = models.ForeignKey(Medicine, on_delete=models.PROTECT, related_name="grn_lines")
+    batch_number = models.CharField(max_length=60)
+    expiry_date = models.DateField()
+    quantity = models.PositiveIntegerField()
+    batch = models.ForeignKey(
+        MedicineBatch,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="grn_lines",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self) -> str:
+        return self.batch_number
+
+
 class StockTransactionQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError("Stock transactions cannot be changed.")
@@ -291,6 +374,7 @@ class StockTransaction(models.Model):
         STOCK_IN = "stock_in", "Stock in"
         ADJUSTMENT = "adjustment", "Adjustment"
         DISPENSE = "dispense", "Dispense"
+        TRANSFER = "transfer", "Transfer"
 
     class Direction(models.TextChoices):
         IN = "in", "In"
@@ -300,6 +384,7 @@ class StockTransaction(models.Model):
         DAMAGED = "damaged", "Damaged"
         EXPIRED = "expired", "Expired"
         COUNT_CORRECTION = "count_correction", "Count correction"
+        TRANSFER = "transfer", "Transfer"
         OTHER = "other", "Other"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -318,6 +403,14 @@ class StockTransaction(models.Model):
         on_delete=models.PROTECT,
         related_name="stock_transactions",
     )
+    grn_line = models.ForeignKey(
+        GoodsReceiptLine,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="stock_transactions",
+    )
+    transfer_group = models.UUIDField(null=True, blank=True, db_index=True)
     recorded_at = models.DateTimeField(default=timezone.now)
     recorded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -347,10 +440,17 @@ class StockTransaction(models.Model):
             raise ValidationError({"direction": "Dispensing decreases the batch."})
         if self.kind == self.Kind.ADJUSTMENT and not self.reason:
             raise ValidationError({"reason": "An adjustment needs a reason."})
+        if self.kind == self.Kind.TRANSFER and self.direction not in {
+            self.Direction.IN,
+            self.Direction.OUT,
+        }:
+            raise ValidationError({"direction": "Transfer direction is required."})
         if self.kind == self.Kind.DISPENSE and not self.prescription_item_id:
             raise ValidationError({"prescription_item": "Dispensing needs a prescription item."})
-        if self.kind != self.Kind.DISPENSE and self.prescription_item_id:
+        if self.kind not in {self.Kind.DISPENSE} and self.prescription_item_id:
             raise ValidationError({"prescription_item": "Only a dispense is linked to a prescription."})
+        if self.kind != self.Kind.STOCK_IN and self.grn_line_id:
+            raise ValidationError({"grn_line": "Only stock-in can be linked to a GRN line."})
         if self.batch_id:
             self.medicine_id = self.batch.medicine_id
             self.branch_id = self.batch.branch_id

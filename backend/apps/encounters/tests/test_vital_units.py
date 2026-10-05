@@ -12,6 +12,7 @@ def test_vital_units_endpoint(api_client, user):
     auth(api_client, user)
     response = api_client.get("/api/v1/vital-units/")
     assert response.status_code == 200, response.data
-    assert response.data["fields"] == list(VITAL_UNIT_FIELDS)
     assert response.data["fields"][0]["field"] == "temperature"
     assert response.data["fields"][0]["unit"] == "°C"
+    assert response.data["options"]["temperature"] == ["°C", "°F"]
+    assert len(response.data["fields"]) == len(VITAL_UNIT_FIELDS)

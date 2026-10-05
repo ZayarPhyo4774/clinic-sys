@@ -12,6 +12,7 @@ const BASE = "/api/v1";
 
 type RequestOptions = RequestInit & {
   auth?: boolean;
+  accept?: string;
 };
 
 let refreshTask: Promise<boolean> | null = null;
@@ -91,8 +92,8 @@ function fail(response: Response, body: unknown): never {
 
 async function send(path: string, options: RequestOptions, allowRefresh: boolean): Promise<Response> {
   const headers = new Headers(options.headers);
-  headers.set("Accept", "application/json");
-  if (options.body && !headers.has("Content-Type")) {
+  headers.set("Accept", options.accept ?? "application/json");
+  if (options.body && !headers.has("Content-Type") && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   if (options.auth !== false) {
@@ -132,6 +133,67 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     fail(response, body);
   }
   return body as T;
+}
+
+export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
+  let response: Response;
+  try {
+    response = await send(path, { method: "POST", body: formData }, true);
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    throw new ApiError(0, "The clinic API could not be reached.", "network", {});
+  }
+  const body = await readBody(response);
+  if (!response.ok) {
+    fail(response, body);
+  }
+  return body as T;
+}
+
+export function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) {
+    return null;
+  }
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (encoded?.[1]) {
+    try {
+      return decodeURIComponent(encoded[1]);
+    } catch {
+      return encoded[1];
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(header);
+  return plain?.[1] ?? null;
+}
+
+export async function apiDownload(
+  path: string,
+  accept = "application/octet-stream",
+): Promise<{ blob: Blob; filename: string | null }> {
+  let response: Response;
+  try {
+    response = await send(path, { method: "GET", accept }, true);
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    throw new ApiError(0, "The clinic API could not be reached.", "network", {});
+  }
+  if (!response.ok) {
+    const body = await readBody(response);
+    fail(response, body);
+  }
+  return {
+    blob: await response.blob(),
+    filename: filenameFromContentDisposition(response.headers.get("Content-Disposition")),
+  };
+}
+
+export async function apiBlob(path: string, accept = "application/octet-stream"): Promise<Blob> {
+  const { blob } = await apiDownload(path, accept);
+  return blob;
 }
 
 export function withQuery(path: string, params: Record<string, string | undefined>) {

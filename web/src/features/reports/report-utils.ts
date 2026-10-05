@@ -1,4 +1,5 @@
-import { getAccessToken, getStoredBranchId } from "@/lib/auth/storage";
+import { apiDownload, withQuery } from "@/lib/api/client";
+import { addDaysIso, clinicTimeZone, localDateIso } from "@/lib/dates/clinic-date";
 
 export type DatePreset = "today" | "7d" | "30d" | "custom";
 
@@ -8,26 +9,26 @@ export type ReportRange = {
   to: string;
 };
 
-export function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+export function todayIso(timeZone?: string | null): string {
+  return localDateIso(clinicTimeZone(timeZone));
 }
 
-export function offsetIso(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+export function offsetIso(days: number, timeZone?: string | null): string {
+  const zone = clinicTimeZone(timeZone);
+  return addDaysIso(localDateIso(zone), days, zone);
 }
 
-export function rangeFromPreset(preset: DatePreset): { from: string; to: string } {
-  const to = todayIso();
+export function rangeFromPreset(preset: DatePreset, timeZone?: string | null): { from: string; to: string } {
+  const zone = clinicTimeZone(timeZone);
+  const to = localDateIso(zone);
   if (preset === "today") {
     return { from: to, to };
   }
   if (preset === "7d") {
-    return { from: offsetIso(-6), to };
+    return { from: addDaysIso(to, -6, zone), to };
   }
   if (preset === "30d") {
-    return { from: offsetIso(-29), to };
+    return { from: addDaysIso(to, -29, zone), to };
   }
   return { from: to, to };
 }
@@ -46,45 +47,27 @@ export function rangeQueryParams(range: ReportRange): Record<string, string | un
   return { from: range.from, to: range.to };
 }
 
-export async function downloadReportCsv(report: string, params: Record<string, string | undefined>) {
-  const search = new URLSearchParams({ report });
-  for (const [key, value] of Object.entries(params)) {
-    if (value) {
-      search.set(key, value);
-    }
-  }
-  const headers = new Headers({ Accept: "text/csv" });
-  const access = getAccessToken();
-  if (access) {
-    headers.set("Authorization", `Bearer ${access}`);
-  }
-  const branchId = getStoredBranchId();
-  if (branchId) {
-    headers.set("X-Branch-Id", branchId);
-  }
-  let response: Response;
-  try {
-    response = await fetch(`/api/v1/reports/export/?${search.toString()}`, { headers });
-  } catch {
-    throw new Error("The clinic API could not be reached.");
-  }
-  if (!response.ok) {
-    let detail = "Export failed.";
-    try {
-      const body = (await response.json()) as { detail?: string };
-      if (body.detail) {
-        detail = body.detail;
-      }
-    } catch {
-      // CSV or empty error bodies are ignored.
-    }
-    throw new Error(detail);
-  }
-  const blob = await response.blob();
+function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${report}-report.csv`;
+  anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+export async function downloadReportCsv(report: string, params: Record<string, string | undefined>) {
+  const { blob, filename } = await apiDownload(
+    withQuery("/reports/export/", { report, ...params }),
+    "text/csv",
+  );
+  triggerDownload(blob, filename ?? `${report}-report.csv`);
+}
+
+export async function downloadCcrExport(format: "xlsx" | "pdf", params: Record<string, string | undefined>) {
+  const { blob, filename } = await apiDownload(
+    withQuery("/reports/ccr/export/", { export_format: format, ...params }),
+    "*/*",
+  );
+  triggerDownload(blob, filename ?? `ccr-report.${format === "pdf" ? "pdf" : "xlsx"}`);
 }

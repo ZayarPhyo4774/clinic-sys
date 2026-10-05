@@ -13,7 +13,8 @@ import { useBillingLookups } from "@/features/billing/billing-lookups";
 import { formatMoney, formatInvoiceKind, invoiceLineTotal } from "@/features/billing/billing-utils";
 import { RequirePermission } from "@/features/access/require-permission";
 import { useAuth } from "@/features/auth/auth-provider";
-import { formatSex, patientAge } from "@/features/consultation/consultation-chart";
+import { formatSex } from "@/features/consultation/consultation-chart";
+import { formatPatientAgeLabel } from "@/lib/patients/age";
 import { useDetailQuery, useRelatedListQuery } from "@/hooks/use-detail-query";
 import type { Invoice, Patient, Payment } from "@/lib/api/types";
 import { formatWhen } from "@/lib/utils";
@@ -73,8 +74,6 @@ function InvoicePrint({ invoiceId, autoPrint }: { invoiceId: string; autoPrint: 
   const patient = patientQuery.data;
   const payments = paymentsQuery.data ?? [];
   const paidTotal = payments.reduce((sum, row) => sum + Number(row.amount), 0);
-  const age = patient ? patientAge(patient.date_of_birth) : null;
-
   return (
     <>
       <PrintToolbar
@@ -115,7 +114,7 @@ function InvoicePrint({ invoiceId, autoPrint }: { invoiceId: string; autoPrint: 
               { label: "Patient No.", value: patient?.patient_number ?? "—" },
               {
                 label: "Age / Sex",
-                value: patient ? `${age ?? "—"} years · ${formatSex(patient.sex)}` : "—",
+                value: patient ? `${formatPatientAgeLabel(patient)} · ${formatSex(patient.sex)}` : "—",
               },
             ]}
           />

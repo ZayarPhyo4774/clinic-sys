@@ -256,9 +256,23 @@ export function CategorySelect({
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>Category</Label>
-      <Select value={value} onValueChange={onValueChange} disabled={categories.isLoading}>
+      <Select
+        value={value}
+        onValueChange={onValueChange}
+        disabled={categories.isLoading || categories.isError}
+      >
         <SelectTrigger id={id} className="w-full">
-          <SelectValue placeholder={categories.isLoading ? "Loading…" : "Select category"} />
+          <SelectValue
+            placeholder={
+              categories.isLoading
+                ? "Loading…"
+                : categories.isError
+                  ? "Could not load categories"
+                  : categories.data?.length
+                    ? "Select category"
+                    : "No categories yet"
+            }
+          />
         </SelectTrigger>
         <SelectContent>
           {categories.data?.map((category) => (
@@ -268,6 +282,9 @@ export function CategorySelect({
           ))}
         </SelectContent>
       </Select>
+      {categories.isError ? (
+        <p className="text-sm text-destructive">Categories could not be loaded. Create one in Catalog setup first.</p>
+      ) : null}
     </div>
   );
 }
@@ -452,11 +469,13 @@ export function BatchSelect({
   medicineId,
   value,
   onValueChange,
+  includeInactive = false,
 }: {
   id: string;
   medicineId: string;
   value: string;
   onValueChange: (value: string) => void;
+  includeInactive?: boolean;
 }) {
   const batches = useResourceList<MedicineBatch>(
     "medicine-batches",
@@ -489,7 +508,7 @@ export function BatchSelect({
         </SelectTrigger>
         <SelectContent>
           {batches.data
-            ?.filter((batch) => batch.is_active)
+            ?.filter((batch) => includeInactive || batch.is_active)
             .map((batch) => {
               const meta = expiryMeta(batch.expiry_date);
               return (

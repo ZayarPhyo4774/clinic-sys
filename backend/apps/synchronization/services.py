@@ -14,7 +14,7 @@ from apps.prescriptions.models import Prescription, PrescriptionItem
 from apps.synchronization.models import SyncChange, SyncOperation
 
 SUPPORTED = {
-    "encounters.VitalSign": "encounters.create",
+    "encounters.VitalSign": "vitals.record",
     "encounters.ClinicalNote": "encounters.create",
     "prescriptions.Prescription": "prescriptions.create",
 }
@@ -264,6 +264,8 @@ def _apply(row, user):
 
 def _create_vital(row, user):
     encounter = _open_encounter(row)
+    if encounter.phase != Encounter.Phase.TRIAGE:
+        raise SyncFailed("Vitals can only be recorded during triage.")
     payload = row.payload
     vital = VitalSign(encounter=encounter, recorded_by=user)
     for field in VitalSign.content_fields:
@@ -275,6 +277,8 @@ def _create_vital(row, user):
 
 def _create_note(row, user):
     encounter = _open_encounter(row)
+    if encounter.phase != Encounter.Phase.CONSULTATION:
+        raise SyncFailed("Start the consultation before recording clinical facts.")
     note = ClinicalNote(encounter=encounter, recorded_by=user, body=row.payload.get("body") or "")
     note.save()
     return note.id, {"id": str(note.id), "encounter": str(note.encounter_id), "body": note.body, "status": note.status}
@@ -282,6 +286,8 @@ def _create_note(row, user):
 
 def _create_prescription(row, user):
     encounter = _open_encounter(row)
+    if encounter.phase != Encounter.Phase.CONSULTATION:
+        raise SyncFailed("Start the consultation before recording clinical facts.")
     payload = row.payload
     medicine = payload.get("medicine")
     if not medicine:

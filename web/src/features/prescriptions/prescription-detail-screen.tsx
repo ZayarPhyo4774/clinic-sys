@@ -11,6 +11,7 @@ import {
   AddPrescriptionItemForm,
   CancelPrescriptionButton,
 } from "@/features/prescriptions/prescription-writes";
+import { PrescriptionOrderTable } from "@/features/prescriptions/prescription-order-line";
 import { PrescriptionItemRow } from "@/features/prescriptions/prescription-item-row";
 import { RequirePermission } from "@/features/access/require-permission";
 import { useDetailQuery, useRelatedListQuery } from "@/hooks/use-detail-query";
@@ -61,8 +62,8 @@ function PrescriptionDetail({ prescriptionId }: { prescriptionId: string }) {
         { label: "Prescriptions", href: "/prescriptions" },
         { label: formatWhen(prescription.created_at) },
       ]}
-      title="Prescription"
-      description={`Status: ${prescription.status.replace(/_/g, " ")}`}
+      title="Doctor's prescription order"
+      description={`${prescription.doctor_full_name ?? "Doctor"} · ${prescription.status.replace(/_/g, " ")} · ${formatWhen(prescription.created_at)}`}
       actions={
         <>
           <PrintRecordButton href={`/prescriptions/${prescriptionId}/print?auto=1`} label="Print prescription" />
@@ -111,31 +112,45 @@ function PrescriptionDetail({ prescriptionId }: { prescriptionId: string }) {
         </DetailGrid>
       </DetailSection>
 
-      <DetailSection title="Prescription items">
-        <div className="min-w-0 space-y-4">
+      <DetailSection title="Doctor's order">
+        {itemsQuery.isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading order…</p>
+        ) : (
+          <PrescriptionOrderTable items={items} />
+        )}
+      </DetailSection>
+
+      <DetailSection title="Add to order">
         <AddPrescriptionItemForm
           prescriptionId={prescriptionId}
           status={prescription.status}
           onUpdated={() => void itemsQuery.refetch()}
         />
-        {itemsQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading items…</p>
-        ) : items.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No prescription items.</p>
-        ) : (
-          <ul className="max-h-[min(70vh,48rem)] space-y-4 overflow-y-auto overscroll-y-contain pr-1">
-            {items.map((item) => (
-              <PrescriptionItemRow
-                key={item.id}
-                prescriptionId={prescriptionId}
-                item={item}
-                onUpdated={() => void itemsQuery.refetch()}
-              />
-            ))}
-          </ul>
-        )}
-        </div>
       </DetailSection>
+
+      {items.some((item) => item.source !== "external") ? (
+        <DetailSection title="Dispense from clinic stock">
+          {itemsQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading items…</p>
+          ) : (
+            <ul className="max-h-[min(70vh,48rem)] space-y-4 overflow-y-auto overscroll-y-contain pr-1">
+              {items
+                .map((item, index) => ({ item, index }))
+                .filter(({ item }) => item.source !== "external")
+                .map(({ item, index }) => (
+                  <PrescriptionItemRow
+                    key={item.id}
+                    prescriptionId={prescriptionId}
+                    item={item}
+                    index={index}
+                    variant="dispense"
+                    onUpdated={() => void itemsQuery.refetch()}
+                  />
+                ))}
+            </ul>
+          )}
+        </DetailSection>
+      ) : null}
     </DetailLayout>
   );
 }

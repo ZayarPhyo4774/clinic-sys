@@ -1,9 +1,11 @@
 "use client";
 
 import { RecordLink } from "@/components/record-link";
+import { PrescriptionOrderLine } from "@/features/prescriptions/prescription-order-line";
 import { DispenseItemForm } from "@/features/prescriptions/prescription-writes";
 import {
   formatQuantityWithUnit,
+  prescriptionItemMedicineLabel,
   remainingBadgeClass,
   remainingFor,
   resolvePrescriptionItemUnit,
@@ -14,48 +16,42 @@ import type { PrescriptionItem } from "@/lib/api/types";
 export function PrescriptionItemRow({
   prescriptionId,
   item,
+  index,
   onUpdated,
+  variant = "full",
 }: {
   prescriptionId: string;
   item: PrescriptionItem;
+  index: number;
   onUpdated: () => void;
+  variant?: "full" | "dispense";
 }) {
   const { labelFor, unitFor } = useMedicineLabelMap();
+  const isExternal = item.source === "external";
   const remaining = remainingFor(item);
-  const medicineLabel = labelFor(item.medicine);
   const unit = resolvePrescriptionItemUnit(item, unitFor);
 
+  if (isExternal) {
+    return null;
+  }
+
   return (
-    <li className="min-w-0 rounded-md border p-3 text-sm">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className={remainingBadgeClass(remaining)}>
-          Remaining: {formatQuantityWithUnit(remaining, unit)}
-        </span>
-      </div>
-      <div className="grid gap-2 sm:grid-cols-2">
-        <div>
-          <p className="font-medium">{medicineLabel}</p>
-          <RecordLink href={`/pharmacy/${item.medicine}`}>
-            <span className="text-xs">View in pharmacy</span>
-          </RecordLink>
+    <li className="min-w-0 space-y-3 rounded-lg border bg-muted/20 p-3">
+      {variant === "full" ? <PrescriptionOrderLine item={item} index={index} className="border-0 bg-transparent p-0" /> : null}
+      {variant === "dispense" ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <p className="font-medium">{prescriptionItemMedicineLabel(item, labelFor)}</p>
+          <span className={remainingBadgeClass(remaining)}>
+            Dispensed {formatQuantityWithUnit(item.quantity_dispensed, unit)} /{" "}
+            {formatQuantityWithUnit(item.quantity, unit)}
+          </span>
         </div>
-        <p>
-          <span className="text-muted-foreground">Dosage: </span>
-          {item.dosage}
-        </p>
-        <p>
-          <span className="text-muted-foreground">Frequency: </span>
-          {item.frequency || "—"}
-        </p>
-        <p>
-          <span className="text-muted-foreground">Duration: </span>
-          {item.duration_days ? `${item.duration_days} days` : "—"}
-        </p>
-        <p>
-          <span className="text-muted-foreground">Quantity: </span>
-          {formatQuantityWithUnit(item.quantity_dispensed, unit)}/{formatQuantityWithUnit(item.quantity, unit)}
-        </p>
-      </div>
+      ) : null}
+      {item.medicine ? (
+        <RecordLink href={`/pharmacy/${item.medicine}`}>
+          <span className="text-xs">View in pharmacy</span>
+        </RecordLink>
+      ) : null}
       <DispenseItemForm prescriptionId={prescriptionId} item={item} onUpdated={onUpdated} />
     </li>
   );

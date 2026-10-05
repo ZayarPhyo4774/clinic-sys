@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { patientBirthFieldsSchema } from "@/lib/patients/birth-schema";
+
 const uuid = (label: string) => z.string().uuid(`Choose a valid ${label}.`);
 const name = (label: string) => z.string().trim().min(1, `${label} is required.`);
 const code = z.string().trim().min(1, "Code is required.");
@@ -47,14 +49,14 @@ function optionalVitalDecimal(min: number, max: number, label: string) {
 
 export const vitalsSchema = z
   .object({
-    temperature: optionalVitalDecimal(30, 45, "Temperature"),
+    temperature: optionalVitalDecimal(30, 45, "Temperature (°C)"),
     pulse: optionalVitalInt(20, 250, "Pulse"),
     respiratory_rate: optionalVitalInt(5, 80, "Respiratory rate"),
     systolic: optionalVitalInt(50, 250, "Systolic"),
     diastolic: optionalVitalInt(30, 150, "Diastolic"),
     spo2: optionalVitalInt(50, 100, "SpO2"),
-    weight_kg: optionalVitalDecimal(0.2, 500, "Weight"),
-    height_cm: optionalVitalDecimal(30, 250, "Height"),
+    weight_kg: optionalVitalDecimal(0.2, 500, "Weight (kg)"),
+    height_cm: optionalVitalDecimal(30, 250, "Height (cm)"),
   })
   .superRefine((value, context) => {
     const hasValue = Object.values(value).some((item) => item.length > 0);
@@ -130,13 +132,34 @@ export const followUpSchema = z.object({
   note: optionalText,
 });
 
-export const prescriptionItemSchema = z.object({
-  medicine: uuid("medicine"),
-  quantity: positiveInt,
-  dosage: name("Dosage"),
-  frequency: optionalText,
-  duration_days: z.coerce.number().int().min(1).nullable().optional(),
-});
+export const prescriptionItemSchema = z
+  .object({
+    source: z.enum(["inventory", "external"]).default("inventory"),
+    medicine: z.string().optional(),
+    medicine_name: optionalText,
+    quantity: positiveInt,
+    dosage: name("Dosage"),
+    frequency: optionalText,
+    duration_days: z.coerce.number().int().min(1).nullable().optional(),
+  })
+  .superRefine((data, context) => {
+    if (data.source === "inventory") {
+      const medicine = uuid("medicine").safeParse(data.medicine);
+      if (!medicine.success) {
+        context.addIssue({
+          code: "custom",
+          message: "Choose a medicine from inventory.",
+          path: ["medicine"],
+        });
+      }
+    } else if (!data.medicine_name?.trim()) {
+      context.addIssue({
+        code: "custom",
+        message: "Enter the medicine name.",
+        path: ["medicine_name"],
+      });
+    }
+  });
 
 export const labOrderCreateSchema = z.object({
   lab_test: uuid("lab test"),
@@ -240,9 +263,8 @@ export const paymentMethodSchema = z.object({
   code: code,
 });
 
-export const patientDemographicsSchema = z.object({
+export const patientDemographicsSchema = patientBirthFieldsSchema.extend({
   full_name: name("Full name"),
-  date_of_birth: z.string().min(1, "Date of birth is required."),
   sex: z.string().min(1, "Sex is required."),
 });
 
@@ -297,6 +319,12 @@ export const documentSchema = z.object({
 export const documentCreateSchema = documentSchema.extend({
   file_name: name("File name"),
   storage_key: name("Storage key"),
+});
+
+export const documentUploadSchema = documentSchema.extend({
+  file: z.custom<File>((value) => value instanceof File && value.size > 0, {
+    message: "Choose a file to upload.",
+  }),
 });
 
 export const documentEditSchema = documentSchema.extend({

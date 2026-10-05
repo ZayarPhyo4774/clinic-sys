@@ -37,6 +37,7 @@ class Patient(models.Model):
     patient_number = models.CharField(max_length=20)
     full_name = models.CharField(max_length=255)
     date_of_birth = models.DateField()
+    dob_is_approximate = models.BooleanField(default=False)
     sex = models.CharField(max_length=20, choices=Sex.choices)
     is_active = models.BooleanField(default=True)
     version = models.PositiveIntegerField(default=1)

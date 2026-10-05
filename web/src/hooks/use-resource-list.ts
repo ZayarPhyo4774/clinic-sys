@@ -3,8 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { useAuth } from "@/features/auth/auth-provider";
-import { api } from "@/lib/api/client";
-import type { Page } from "@/lib/api/types";
+import { fetchAllPages } from "@/lib/api/paginate";
 
 export function useResourceList<T>(resource: string, path: string | null) {
   const { account, branchId } = useAuth();
@@ -12,10 +11,7 @@ export function useResourceList<T>(resource: string, path: string | null) {
   return useQuery({
     queryKey: [resource, "choices", path, branchId],
     enabled: Boolean(account && path),
-    queryFn: async () => {
-      const page = await api<Page<T>>(path as string);
-      return page.results;
-    },
+    queryFn: async () => fetchAllPages<T>(path as string),
     staleTime: 60_000,
   });
 }

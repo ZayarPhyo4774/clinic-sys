@@ -2,12 +2,12 @@ import { z } from "zod";
 
 import { sexOptions } from "@/features/patients/contract";
 import { validationError } from "@/lib/api/errors";
+import { patientBirthFieldsSchema } from "@/lib/patients/birth-schema";
 
 const sexValues = sexOptions.map((option) => option.value) as [string, ...string[]];
 
-export const registerPatientSchema = z.object({
+export const registerPatientSchema = patientBirthFieldsSchema.extend({
   full_name: z.string().trim().min(1, "Full name is required."),
-  date_of_birth: z.string().min(1, "Date of birth is required."),
   sex: z.enum(sexValues, { message: "Sex is required." }),
 });
 

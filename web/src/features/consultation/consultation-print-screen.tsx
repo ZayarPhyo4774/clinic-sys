@@ -10,7 +10,8 @@ import {
   PrintTable,
   PrintToolbar,
 } from "@/components/print/print-document";
-import { formatSex, patientAge } from "@/features/consultation/consultation-chart";
+import { formatSex } from "@/features/consultation/consultation-chart";
+import { formatPatientAgeLabel, formatPatientDobLabel } from "@/lib/patients/age";
 import { RequirePermission } from "@/features/access/require-permission";
 import { useDetailQuery } from "@/hooks/use-detail-query";
 import { useVitalUnits } from "@/hooks/use-vital-units";
@@ -73,7 +74,6 @@ function ConsultationPrint({ encounterId, autoPrint }: { encounterId: string; au
   const allergies = patientQuery.data?.allergies.filter((row) => row.status === "active") ?? [];
   const history = patientQuery.data?.medical_history.filter((row) => row.status === "active") ?? [];
   const doctorName = encounter.doctor_full_name?.trim() || "Attending physician";
-  const age = patient ? patientAge(patient.date_of_birth) : null;
 
   return (
     <>
@@ -99,10 +99,13 @@ function ConsultationPrint({ encounterId, autoPrint }: { encounterId: string; au
               {
                 label: "Age / Sex",
                 value: patient
-                  ? `${age ?? "—"} years · ${formatSex(patient.sex)}`
+                  ? `${formatPatientAgeLabel(patient)} · ${formatSex(patient.sex)}`
                   : "—",
               },
-              { label: "Date of birth", value: patient?.date_of_birth ?? "—" },
+              {
+                label: patient?.dob_is_approximate ? "Approx. date of birth" : "Date of birth",
+                value: patient ? formatPatientDobLabel(patient) : "—",
+              },
             ]}
           />
         </PrintSection>

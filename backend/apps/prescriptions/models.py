@@ -92,13 +92,25 @@ class PrescriptionItemQuerySet(models.QuerySet):
 
 
 class PrescriptionItem(models.Model):
+    class Source(models.TextChoices):
+        INVENTORY = "inventory", "Inventory"
+        EXTERNAL = "external", "External"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     prescription = models.ForeignKey(Prescription, on_delete=models.PROTECT, related_name="items")
     clinic = models.ForeignKey("clinics.Clinic", on_delete=models.PROTECT, related_name="prescription_items")
     branch = models.ForeignKey("clinics.Branch", on_delete=models.PROTECT, related_name="prescription_items")
     patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="prescription_items")
     doctor = models.ForeignKey("clinics.DoctorProfile", on_delete=models.PROTECT, related_name="prescription_items")
-    medicine = models.ForeignKey("pharmacy.Medicine", on_delete=models.PROTECT, related_name="prescription_items")
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.INVENTORY)
+    medicine = models.ForeignKey(
+        "pharmacy.Medicine",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="prescription_items",
+    )
+    medicine_name = models.CharField(max_length=255, blank=True, default="")
     quantity = models.PositiveIntegerField()
     quantity_dispensed = models.PositiveIntegerField(default=0)
     dosage = models.CharField(max_length=255)
@@ -124,6 +136,13 @@ class PrescriptionItem(models.Model):
                 condition=models.Q(quantity_dispensed__lte=models.F("quantity")),
                 name="rx_item_dispensed_lte",
             ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(source="inventory", medicine__isnull=False)
+                    | models.Q(source="external", medicine__isnull=True, medicine_name__gt="")
+                ),
+                name="rx_item_source_valid",
+            ),
         ]
 
     def clean(self):
@@ -135,9 +154,27 @@ class PrescriptionItem(models.Model):
             raise ValidationError({"quantity": "Dispensed quantity cannot exceed the prescription."})
         if not (self.dosage or "").strip():
             raise ValidationError({"dosage": "Dosage is required."})
+        self.medicine_name = (self.medicine_name or "").strip()
+        if self.source == self.Source.INVENTORY:
+            if not self.medicine_id:
+                raise ValidationError({"medicine": "Medicine is required for inventory items."})
+            if self.medicine_name:
+                raise ValidationError({"medicine_name": "External medicine name is not used for inventory items."})
+        elif self.source == self.Source.EXTERNAL:
+            if self.medicine_id:
+                raise ValidationError({"medicine": "External items cannot reference clinic inventory."})
+            if not self.medicine_name:
+                raise ValidationError({"medicine_name": "Medicine name is required for external items."})
+            if self.quantity_dispensed:
+                raise ValidationError({"quantity_dispensed": "External items are not dispensed from inventory."})
         if self.medicine_id and self.clinic_id and self.medicine.clinic_id != self.clinic_id:
             raise ValidationError({"medicine": "Medicine is outside this clinic."})
-        if self._state.adding and self.medicine_id and not self.medicine.is_active:
+        if (
+            self._state.adding
+            and self.source == self.Source.INVENTORY
+            and self.medicine_id
+            and not self.medicine.is_active
+        ):
             raise ValidationError({"medicine": "Medicine is not active."})
         if self._state.adding and self.prescription_id and self.prescription.status not in Prescription.OPENABLE:
             raise ValidationError({"prescription": "Items cannot be added to this prescription."})
@@ -146,6 +183,9 @@ class PrescriptionItem(models.Model):
         with transaction.atomic():
             self.dosage = (self.dosage or "").strip()
             self.frequency = (self.frequency or "").strip()
+            self.medicine_name = (self.medicine_name or "").strip()
+            if self.source == self.Source.EXTERNAL:
+                self.medicine_id = None
             if self.prescription_id:
                 prescription = self.prescription
                 self.patient_id = prescription.patient_id
@@ -156,7 +196,9 @@ class PrescriptionItem(models.Model):
             if previous is not None:
                 locked = (
                     "prescription_id",
+                    "source",
                     "medicine_id",
+                    "medicine_name",
                     "quantity",
                     "dosage",
                     "frequency",

@@ -17,12 +17,15 @@ import {
 } from "@/components/ui/select";
 import { allowed } from "@/features/access/navigation";
 import { useAuth } from "@/features/auth/auth-provider";
+import { PatientBirthFields } from "@/features/patients/patient-birth-fields";
 import { sexOptions } from "@/features/patients/contract";
 import { api } from "@/lib/api/client";
 import { FormError } from "@/components/form-field-error";
 import { fieldMessages, validationError } from "@/lib/api/errors";
 import { formatZodError, registerPatientSchema } from "@/lib/forms/schemas";
 import type { Patient } from "@/lib/api/types";
+import type { PatientBirthMode } from "@/lib/patients/age";
+import { buildPatientDemographicsPayload } from "@/lib/patients/birth-schema";
 import { isOnline } from "@/offline/connectivity/network";
 import { requireOnlineMutation } from "@/offline/sync/policy";
 
@@ -30,12 +33,14 @@ export function RegisterPatient() {
   const { account } = useAuth();
   const queryClient = useQueryClient();
   const [fullName, setFullName] = useState("");
+  const [birthMode, setBirthMode] = useState<PatientBirthMode>("dob");
   const [dateOfBirth, setDateOfBirth] = useState("");
+  const [age, setAge] = useState("");
   const [sex, setSex] = useState("");
   const [error, setError] = useState<unknown>(null);
 
   const mutation = useMutation({
-    mutationFn: (payload: { full_name: string; date_of_birth: string; sex: string }) => {
+    mutationFn: (payload: Record<string, string | number>) => {
       requireOnlineMutation("patients.register", isOnline());
       return api<Patient>("/patients/", {
         method: "POST",
@@ -44,7 +49,9 @@ export function RegisterPatient() {
     },
     onSuccess: async () => {
       setFullName("");
+      setBirthMode("dob");
       setDateOfBirth("");
+      setAge("");
       setSex("");
       setError(null);
       toast.success("Patient registered.");
@@ -62,14 +69,16 @@ export function RegisterPatient() {
     setError(null);
     const parsed = registerPatientSchema.safeParse({
       full_name: fullName,
+      birth_mode: birthMode,
       date_of_birth: dateOfBirth,
+      age,
       sex: sex || undefined,
     });
     if (!parsed.success) {
       setError(validationError(formatZodError(parsed.error)));
       return;
     }
-    mutation.mutate(parsed.data);
+    mutation.mutate(buildPatientDemographicsPayload(parsed.data));
   }
 
   return (
@@ -85,16 +94,17 @@ export function RegisterPatient() {
             <Input id="full_name" value={fullName} required onChange={(event) => setFullName(event.target.value)} />
             <FieldError error={error} name="full_name" />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="date_of_birth">Date of birth</Label>
-            <Input
-              id="date_of_birth"
-              type="date"
-              required
-              value={dateOfBirth}
-              onChange={(event) => setDateOfBirth(event.target.value)}
+          <div className="md:col-span-2">
+            <PatientBirthFields
+              idPrefix="register"
+              mode={birthMode}
+              onModeChange={setBirthMode}
+              dateOfBirth={dateOfBirth}
+              onDateOfBirthChange={setDateOfBirth}
+              age={age}
+              onAgeChange={setAge}
+              error={error}
             />
-            <FieldError error={error} name="date_of_birth" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="sex">Sex</Label>

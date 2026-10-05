@@ -46,6 +46,7 @@ class BranchSerializer(serializers.ModelSerializer):
             "clinic",
             "name",
             "code",
+            "inventory_role",
             "is_active",
             "created_at",
             "updated_at",

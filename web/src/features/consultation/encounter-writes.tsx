@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PanelTabs, PanelTabsContent, PanelTabsList, PanelTabsTrigger } from "@/components/panel-tabs";
 import { cn } from "@/lib/utils";
 import { allowed } from "@/features/access/navigation";
 import { useAuth } from "@/features/auth/auth-provider";
@@ -31,42 +31,77 @@ import {
   symptomSchema,
   treatmentPlanSchema,
   validateForm,
-  buildVitalsBody,
-  vitalsSchema,
 } from "@/lib/forms/schemas";
-import { useVitalUnits } from "@/hooks/use-vital-units";
-import type { Encounter, Invoice, LabOrder, Prescription, VitalUnitFieldName } from "@/lib/api/types";
+import type { Encounter, Invoice, LabOrder, Prescription } from "@/lib/api/types";
 import { formatMedicineUnit, formatPrescriptionItemSummary } from "@/features/prescriptions/prescription-utils";
 import { useMedicineLabelMap } from "@/features/prescriptions/use-medicine-labels";
-import {
-  DEFAULT_VITAL_UNITS,
-  EMPTY_VITAL_FORM_VALUES,
-  vitalFieldLabel,
-} from "@/lib/vitals/units";
-import { queueConsultationNote, queueVital } from "@/offline/repositories/clinical-repository";
+import { ConsultationCcrForm } from "@/features/consultation/consultation-ccr-form";
+import { queueConsultationNote } from "@/offline/repositories/clinical-repository";
 import { isOnline } from "@/offline/connectivity/network";
 import { requireOnlineMutation } from "@/offline/sync/policy";
+
+export function CompleteEncounterButton({
+  encounter,
+  onUpdated,
+}: {
+  encounter: Encounter;
+  onUpdated: () => void;
+}) {
+  const { account } = useAuth();
+  const canComplete = Boolean(
+    account &&
+      allowed(account.permissions, "encounters.update") &&
+      encounter.status === "open" &&
+      encounter.phase === "consultation",
+  );
+  if (!canComplete) {
+    return null;
+  }
+  return <CompleteEncounter encounterId={encounter.id} onUpdated={onUpdated} inline />;
+}
 
 export function EncounterWritePanel({
   encounter,
   onUpdated,
-  layout = "stack",
 }: {
   encounter: Encounter;
   onUpdated: () => void;
-  layout?: "stack" | "sidebar";
 }) {
   const { account } = useAuth();
   const isOpen = encounter.status === "open";
+  const inConsultationPhase = encounter.phase === "consultation";
   const canView = Boolean(account && allowed(account.permissions, "encounters.view"));
-  const canCreateFacts = Boolean(account && allowed(account.permissions, "encounters.create") && isOpen);
-  const canComplete = Boolean(account && allowed(account.permissions, "encounters.update") && isOpen);
-  const canPrescribe = Boolean(account && allowed(account.permissions, "prescriptions.create") && isOpen);
-  const canLab = Boolean(account && allowed(account.permissions, "laboratory.manage") && isOpen);
-  const canBill = Boolean(account && allowed(account.permissions, "billing.create") && isOpen);
+  const canCreateFacts = Boolean(
+    account && allowed(account.permissions, "encounters.create") && isOpen && inConsultationPhase,
+  );
+  const canComplete = Boolean(
+    account && allowed(account.permissions, "encounters.update") && isOpen && inConsultationPhase,
+  );
+  const canPrescribe = Boolean(
+    account && allowed(account.permissions, "prescriptions.create") && isOpen && inConsultationPhase,
+  );
+  const canLab = Boolean(
+    account && allowed(account.permissions, "laboratory.manage") && isOpen && inConsultationPhase,
+  );
+  const canBill = Boolean(
+    account && allowed(account.permissions, "billing.create") && isOpen && inConsultationPhase,
+  );
   const printAction = canView ? (
     <PrintRecordButton href={`/consultation/${encounter.id}/print?auto=1`} label="Print record" />
   ) : null;
+
+  if (isOpen && !inConsultationPhase && canView) {
+    return (
+      <Card className="shadow-premium-sm">
+        <CardContent className="p-6">
+          <p className="text-sm text-muted-foreground">
+            This visit is still in triage. Vitals are recorded from the queue board before the doctor starts the
+            consultation.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (!canCreateFacts && !canComplete && !canPrescribe && !canLab && !canBill) {
     if (encounter.status === "completed") {
@@ -92,94 +127,91 @@ export function EncounterWritePanel({
     ) : null;
   }
 
-  const vitalsSection = canCreateFacts ? (
-    <>
-      <AddVitalsForm encounterId={encounter.id} onUpdated={onUpdated} compact={layout === "sidebar"} />
-      <AddNoteForm encounterId={encounter.id} onUpdated={onUpdated} />
-    </>
-  ) : null;
-
-  const assessmentSection = canCreateFacts ? (
-    <>
-      <AddSymptomForm encounterId={encounter.id} onUpdated={onUpdated} />
-      <AddDiagnosisForm encounterId={encounter.id} onUpdated={onUpdated} />
-    </>
-  ) : null;
-
-  const planSection = canCreateFacts ? (
-    <>
-      <AddTreatmentPlanForm encounterId={encounter.id} onUpdated={onUpdated} />
-      <AddFollowUpForm encounterId={encounter.id} onUpdated={onUpdated} />
-    </>
-  ) : null;
-
-  const ordersSection = (
-    <>
-      {canPrescribe ? <CreatePrescriptionForm encounterId={encounter.id} compact={layout === "sidebar"} /> : null}
-      {canLab ? <CreateLabOrderForm encounterId={encounter.id} /> : null}
-      {canBill ? <CreateInvoiceButton encounterId={encounter.id} /> : null}
-    </>
-  );
-
-  if (layout === "sidebar") {
-    const defaultTab = canCreateFacts ? "vitals" : canPrescribe || canLab || canBill ? "orders" : "vitals";
-
-    return (
-      <Card className="min-w-0 shadow-premium-sm">
-        <CardHeader className="space-y-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <CardTitle className="text-base">Document encounter</CardTitle>
-            {printAction}
-          </div>
-          {canComplete ? <CompleteEncounter encounterId={encounter.id} onUpdated={onUpdated} /> : null}
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Tabs defaultValue={defaultTab}>
-            <TabsList className="h-auto w-full flex-wrap justify-start gap-1">
-              {canCreateFacts ? <TabsTrigger value="vitals">Vitals</TabsTrigger> : null}
-              {canCreateFacts ? <TabsTrigger value="assessment">Assessment</TabsTrigger> : null}
-              {canCreateFacts ? <TabsTrigger value="plan">Plan</TabsTrigger> : null}
-              {canPrescribe || canLab || canBill ? <TabsTrigger value="orders">Orders</TabsTrigger> : null}
-            </TabsList>
-            {canCreateFacts ? (
-              <TabsContent value="vitals" className="mt-4 space-y-4">
-                {vitalsSection}
-              </TabsContent>
-            ) : null}
-            {canCreateFacts ? (
-              <TabsContent value="assessment" className="mt-4 space-y-4">
-                {assessmentSection}
-              </TabsContent>
-            ) : null}
-            {canCreateFacts ? (
-              <TabsContent value="plan" className="mt-4 space-y-4">
-                {planSection}
-              </TabsContent>
-            ) : null}
-            {canPrescribe || canLab || canBill ? (
-              <TabsContent value="orders" className="mt-4 space-y-4">
-                {ordersSection}
-              </TabsContent>
-            ) : null}
-          </Tabs>
-        </CardContent>
-      </Card>
-    );
-  }
+  const defaultTab = canCreateFacts
+    ? "assessment"
+    : canPrescribe || canLab || canBill
+      ? "orders"
+      : "finish";
 
   return (
-    <div className="space-y-6">
-      {printAction ? <ActionBar>{printAction}</ActionBar> : null}
-      {canComplete ? <CompleteEncounter encounterId={encounter.id} onUpdated={onUpdated} /> : null}
-      {vitalsSection}
-      {assessmentSection}
-      {planSection}
-      {ordersSection}
-    </div>
+    <Card className="min-w-0 shadow-premium-sm">
+      <CardHeader className="space-y-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Document visit</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">Work tab by tab. The chart updates on the left.</p>
+          </div>
+          {printAction}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <PanelTabs defaultValue={defaultTab} className="min-w-0">
+          <PanelTabsList>
+            {canCreateFacts ? <PanelTabsTrigger value="assessment">Assessment</PanelTabsTrigger> : null}
+            {canCreateFacts ? <PanelTabsTrigger value="ccr">CCR</PanelTabsTrigger> : null}
+            {canCreateFacts ? <PanelTabsTrigger value="plan">Plan</PanelTabsTrigger> : null}
+            {canPrescribe || canLab || canBill ? <PanelTabsTrigger value="orders">Orders</PanelTabsTrigger> : null}
+            {canComplete ? <PanelTabsTrigger value="finish">Finish</PanelTabsTrigger> : null}
+          </PanelTabsList>
+
+          {canCreateFacts ? (
+            <PanelTabsContent value="assessment" className="mt-4 space-y-4">
+              <AddNoteForm encounterId={encounter.id} onUpdated={onUpdated} bare />
+              <AddSymptomForm encounterId={encounter.id} onUpdated={onUpdated} bare />
+              <AddDiagnosisForm encounterId={encounter.id} onUpdated={onUpdated} bare />
+            </PanelTabsContent>
+          ) : null}
+
+          {canCreateFacts ? (
+            <PanelTabsContent value="ccr" className="mt-4">
+              <ConsultationCcrForm encounterId={encounter.id} onUpdated={onUpdated} />
+            </PanelTabsContent>
+          ) : null}
+
+          {canCreateFacts ? (
+            <PanelTabsContent value="plan" className="mt-4 space-y-4">
+              <AddTreatmentPlanForm encounterId={encounter.id} onUpdated={onUpdated} bare />
+              <AddFollowUpForm encounterId={encounter.id} onUpdated={onUpdated} bare />
+            </PanelTabsContent>
+          ) : null}
+
+          {canPrescribe || canLab || canBill ? (
+            <PanelTabsContent value="orders" className="mt-4 space-y-4">
+              {canPrescribe ? (
+                <CreatePrescriptionForm encounterId={encounter.id} compact bare onUpdated={onUpdated} />
+              ) : null}
+              {canLab ? <CreateLabOrderForm encounterId={encounter.id} bare /> : null}
+              {canBill ? <CreateInvoiceButton encounterId={encounter.id} /> : null}
+            </PanelTabsContent>
+          ) : null}
+
+          {canComplete ? (
+            <PanelTabsContent value="finish" className="mt-4">
+              <p className="text-sm text-muted-foreground">
+                Use <strong className="font-medium text-foreground">Complete consultation</strong> in the page header
+                when documentation is done. Then complete the visit from the queue board.
+              </p>
+            </PanelTabsContent>
+          ) : null}
+        </PanelTabs>
+      </CardContent>
+    </Card>
   );
 }
 
-function CompleteEncounter({ encounterId, onUpdated }: { encounterId: string; onUpdated: () => void }) {
+function formClass(bare?: boolean, extra?: string) {
+  return cn(bare ? cn("space-y-3", extra) : cn("space-y-3 rounded-lg border bg-card p-4", extra));
+}
+
+function CompleteEncounter({
+  encounterId,
+  onUpdated,
+  inline = false,
+}: {
+  encounterId: string;
+  onUpdated: () => void;
+  inline?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const mutation = useMutation({
@@ -198,13 +230,15 @@ function CompleteEncounter({ encounterId, onUpdated }: { encounterId: string; on
     },
   });
 
+  const button = (
+    <Button type="button" disabled={mutation.isPending} onClick={() => setConfirmOpen(true)}>
+      {mutation.isPending ? "Completing…" : "Complete consultation"}
+    </Button>
+  );
+
   return (
     <>
-      <ActionBar>
-        <Button type="button" disabled={mutation.isPending} onClick={() => setConfirmOpen(true)}>
-          {mutation.isPending ? "Completing…" : "Complete consultation"}
-        </Button>
-      </ActionBar>
+      {inline ? button : <ActionBar>{button}</ActionBar>}
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
@@ -218,97 +252,15 @@ function CompleteEncounter({ encounterId, onUpdated }: { encounterId: string; on
   );
 }
 
-function AddVitalsForm({
+function AddNoteForm({
   encounterId,
   onUpdated,
-  compact = false,
+  bare = false,
 }: {
   encounterId: string;
   onUpdated: () => void;
-  compact?: boolean;
+  bare?: boolean;
 }) {
-  const { account } = useAuth();
-  const queryClient = useQueryClient();
-  const vitalUnitsQuery = useVitalUnits();
-  const vitalUnits = vitalUnitsQuery.data ?? DEFAULT_VITAL_UNITS;
-  const [values, setValues] = useState(EMPTY_VITAL_FORM_VALUES);
-  const [error, setError] = useState<unknown>(null);
-
-  function setFieldValue(field: VitalUnitFieldName, value: string) {
-    setValues((current) => ({ ...current, [field]: value }));
-  }
-
-  function resetValues() {
-    setValues(EMPTY_VITAL_FORM_VALUES);
-  }
-
-  const mutation = useMutation({
-    mutationFn: async (body: Record<string, string | number>) => {
-      requireOnlineMutation("vitals.record", isOnline());
-      if (!isOnline()) {
-        if (!account?.id) {
-          throw new Error("Sign in is required.");
-        }
-        await queueVital({ userId: account.id, encounterId, measurements: body });
-        return;
-      }
-      return api(`/encounters/${encounterId}/vitals/`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    onSuccess: async () => {
-      resetValues();
-      setError(null);
-      toast.success(isOnline() ? "Vitals recorded." : "Vitals saved on this device and will sync when online.");
-      await queryClient.invalidateQueries({ queryKey: ["encounters"] });
-      onUpdated();
-    },
-    onError: (caught) => setError(caught),
-  });
-
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    const parsed = parseForm(vitalsSchema, values);
-    if (!parsed.ok) {
-      setError(validationError(formatZodError(parsed.error)));
-      return;
-    }
-    mutation.mutate(buildVitalsBody(parsed.data));
-  }
-
-  return (
-    <form
-      className={cn("grid gap-3 rounded-lg border bg-card p-4", compact ? "grid-cols-2" : "md:grid-cols-3")}
-      onSubmit={onSubmit}
-    >
-      <p className={cn("text-sm font-medium", compact ? "col-span-2" : "md:col-span-3")}>Record vitals</p>
-      {vitalUnits.map((field) => (
-        <div key={field.field} className="space-y-2">
-          <Label htmlFor={field.field}>{vitalFieldLabel(field)}</Label>
-          <Input
-            id={field.field}
-            inputMode={field.input_mode}
-            value={values[field.field]}
-            onChange={(event) => setFieldValue(field.field, event.target.value)}
-          />
-          <FormFieldError error={error} name={field.field} />
-        </div>
-      ))}
-      <div className={cn("flex items-end", compact ? "col-span-2" : "md:col-span-3")}>
-        <Button type="submit" size="sm" disabled={mutation.isPending}>
-          {mutation.isPending ? "Saving…" : "Save vitals"}
-        </Button>
-      </div>
-      <div className={compact ? "col-span-2" : "md:col-span-3"}>
-        <FormError error={error} />
-      </div>
-    </form>
-  );
-}
-
-function AddNoteForm({ encounterId, onUpdated }: { encounterId: string; onUpdated: () => void }) {
   const { account } = useAuth();
   const queryClient = useQueryClient();
   const [body, setBody] = useState("");
@@ -351,8 +303,7 @@ function AddNoteForm({ encounterId, onUpdated }: { encounterId: string; onUpdate
   }
 
   return (
-    <form className="space-y-3 rounded-lg border bg-card p-4" onSubmit={onSubmit}>
-      <p className="text-sm font-medium">Clinical note</p>
+    <form className={formClass(bare)} onSubmit={onSubmit}>
       <div className="space-y-2">
         <Label htmlFor="note_body">Subjective / objective findings</Label>
         <textarea
@@ -375,8 +326,10 @@ function AddNoteForm({ encounterId, onUpdated }: { encounterId: string; onUpdate
 }
 
 type PrescriptionDraftItem = {
+  source: "inventory" | "external";
   medicine: string;
   medicineLabel: string;
+  medicineName: string;
   medicineUnit: string;
   quantity: string;
   dosage: string;
@@ -385,16 +338,26 @@ type PrescriptionDraftItem = {
 };
 
 const emptyDraftItem = (): PrescriptionDraftItem => ({
+  source: "inventory",
   medicine: "",
   medicineLabel: "",
+  medicineName: "",
   medicineUnit: "",
-  quantity: "",
+  quantity: "1",
   dosage: "",
   frequency: "",
   durationDays: "",
 });
 
-function AddSymptomForm({ encounterId, onUpdated }: { encounterId: string; onUpdated: () => void }) {
+function AddSymptomForm({
+  encounterId,
+  onUpdated,
+  bare = false,
+}: {
+  encounterId: string;
+  onUpdated: () => void;
+  bare?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [description, setDescription] = useState("");
   const [error, setError] = useState<unknown>(null);
@@ -428,8 +391,7 @@ function AddSymptomForm({ encounterId, onUpdated }: { encounterId: string; onUpd
   }
 
   return (
-    <form className="space-y-3 rounded-lg border bg-card p-4" onSubmit={onSubmit}>
-      <p className="text-sm font-medium">Add symptom</p>
+    <form className={formClass(bare)} onSubmit={onSubmit}>
       <div className="space-y-2">
         <Label htmlFor="symptom_description">Description</Label>
         <Input id="symptom_description" value={description} onChange={(event) => setDescription(event.target.value)} />
@@ -443,7 +405,15 @@ function AddSymptomForm({ encounterId, onUpdated }: { encounterId: string; onUpd
   );
 }
 
-function AddDiagnosisForm({ encounterId, onUpdated }: { encounterId: string; onUpdated: () => void }) {
+function AddDiagnosisForm({
+  encounterId,
+  onUpdated,
+  bare = false,
+}: {
+  encounterId: string;
+  onUpdated: () => void;
+  bare?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
@@ -478,8 +448,7 @@ function AddDiagnosisForm({ encounterId, onUpdated }: { encounterId: string; onU
   }
 
   return (
-    <form className="grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-2" onSubmit={onSubmit}>
-      <p className="text-sm font-medium md:col-span-2">Add diagnosis</p>
+    <form className={formClass(bare, "grid gap-3 md:grid-cols-2")} onSubmit={onSubmit}>
       <div className="space-y-2">
         <Label htmlFor="diagnosis_code">Code</Label>
         <Input id="diagnosis_code" value={code} onChange={(event) => setCode(event.target.value)} />
@@ -506,7 +475,15 @@ function AddDiagnosisForm({ encounterId, onUpdated }: { encounterId: string; onU
   );
 }
 
-function AddTreatmentPlanForm({ encounterId, onUpdated }: { encounterId: string; onUpdated: () => void }) {
+function AddTreatmentPlanForm({
+  encounterId,
+  onUpdated,
+  bare = false,
+}: {
+  encounterId: string;
+  onUpdated: () => void;
+  bare?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
@@ -541,8 +518,7 @@ function AddTreatmentPlanForm({ encounterId, onUpdated }: { encounterId: string;
   }
 
   return (
-    <form className="grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-2" onSubmit={onSubmit}>
-      <p className="text-sm font-medium md:col-span-2">Add treatment plan</p>
+    <form className={formClass(bare, "grid gap-3 md:grid-cols-2")} onSubmit={onSubmit}>
       <div className="space-y-2">
         <Label htmlFor="plan_title">Title</Label>
         <Input id="plan_title" value={title} onChange={(event) => setTitle(event.target.value)} />
@@ -573,7 +549,15 @@ function AddTreatmentPlanForm({ encounterId, onUpdated }: { encounterId: string;
   );
 }
 
-function AddFollowUpForm({ encounterId, onUpdated }: { encounterId: string; onUpdated: () => void }) {
+function AddFollowUpForm({
+  encounterId,
+  onUpdated,
+  bare = false,
+}: {
+  encounterId: string;
+  onUpdated: () => void;
+  bare?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [followUpOn, setFollowUpOn] = useState("");
   const [note, setNote] = useState("");
@@ -611,8 +595,7 @@ function AddFollowUpForm({ encounterId, onUpdated }: { encounterId: string; onUp
   }
 
   return (
-    <form className="grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-2" onSubmit={onSubmit}>
-      <p className="text-sm font-medium md:col-span-2">Schedule follow-up</p>
+    <form className={formClass(bare, "grid gap-3 md:grid-cols-2")} onSubmit={onSubmit}>
       <div className="space-y-2">
         <Label htmlFor="follow_up_on">Follow-up date</Label>
         <Input id="follow_up_on" type="date" value={followUpOn} onChange={(event) => setFollowUpOn(event.target.value)} />
@@ -637,11 +620,14 @@ function AddFollowUpForm({ encounterId, onUpdated }: { encounterId: string; onUp
 function CreatePrescriptionForm({
   encounterId,
   compact = false,
+  bare = false,
+  onUpdated,
 }: {
   encounterId: string;
   compact?: boolean;
+  bare?: boolean;
+  onUpdated?: () => void;
 }) {
-  const router = useRouter();
   const queryClient = useQueryClient();
   const { labelFor, unitFor } = useMedicineLabelMap();
   const [draft, setDraft] = useState<PrescriptionDraftItem>(emptyDraftItem);
@@ -659,8 +645,10 @@ function CreatePrescriptionForm({
         await api(`/prescriptions/${prescription.id}/items/`, {
           method: "POST",
           body: JSON.stringify({
-            medicine: line.medicine,
-            quantity: Number(line.quantity),
+            source: line.source,
+            medicine: line.source === "inventory" ? line.medicine : undefined,
+            medicine_name: line.source === "external" ? line.medicineName : undefined,
+            quantity: Number(line.quantity || 1),
             dosage: line.dosage,
             frequency: line.frequency || undefined,
             duration_days: line.durationDays ? Number(line.durationDays) : undefined,
@@ -669,13 +657,14 @@ function CreatePrescriptionForm({
       }
       return prescription;
     },
-    onSuccess: async (prescription) => {
+    onSuccess: async () => {
       setDraft(emptyDraftItem());
       setItems([]);
       setError(null);
-      toast.success("Prescription created.");
+      toast.success("Prescription saved to this visit.");
       await queryClient.invalidateQueries({ queryKey: ["prescriptions"] });
-      router.push(`/prescriptions/${prescription.id}`);
+      await queryClient.invalidateQueries({ queryKey: ["prescription-items"] });
+      onUpdated?.();
     },
     onError: (caught) => setError(caught),
   });
@@ -686,8 +675,10 @@ function CreatePrescriptionForm({
       !validateForm(
         prescriptionItemSchema,
         {
+          source: draft.source,
           medicine: draft.medicine,
-          quantity: draft.quantity,
+          medicine_name: draft.medicineName,
+          quantity: draft.quantity || "1",
           dosage: draft.dosage,
           frequency: draft.frequency || "daily",
           duration_days: draft.durationDays ? Number(draft.durationDays) : null,
@@ -701,8 +692,9 @@ function CreatePrescriptionForm({
       ...current,
       {
         ...draft,
-        medicineLabel: labelFor(draft.medicine),
-        medicineUnit: unitFor(draft.medicine),
+        medicineLabel:
+          draft.source === "inventory" ? labelFor(draft.medicine) : draft.medicineName.trim(),
+        medicineUnit: draft.source === "inventory" ? unitFor(draft.medicine) : "",
       },
     ]);
     setDraft(emptyDraftItem());
@@ -712,19 +704,35 @@ function CreatePrescriptionForm({
     setItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
   }
 
+  function draftHasContent() {
+    return Boolean(
+      draft.dosage ||
+        draft.medicine ||
+        draft.medicineName ||
+        (draft.quantity && draft.quantity !== "1") ||
+        draft.frequency ||
+        draft.durationDays,
+    );
+  }
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     const lines = [...items];
-    if (draft.medicine || draft.quantity || draft.dosage) {
-      if (!draft.medicine || !draft.quantity || !draft.dosage) {
+    if (draftHasContent()) {
+      const medicineOk = draft.source === "inventory" ? draft.medicine : draft.medicineName.trim();
+      if (!medicineOk || !draft.dosage) {
         setError(new Error("Complete the current line or clear it before creating."));
         return;
       }
       lines.push({
         ...draft,
-        medicineLabel: draft.medicineLabel || labelFor(draft.medicine),
-        medicineUnit: draft.medicineUnit || unitFor(draft.medicine),
+        quantity: draft.quantity || "1",
+        medicineLabel:
+          draft.source === "inventory"
+            ? draft.medicineLabel || labelFor(draft.medicine)
+            : draft.medicineName.trim(),
+        medicineUnit: draft.source === "inventory" ? draft.medicineUnit || unitFor(draft.medicine) : "",
       });
     }
     if (lines.length === 0) {
@@ -736,37 +744,72 @@ function CreatePrescriptionForm({
 
   return (
     <form
-      className={cn("min-w-0 space-y-4 rounded-lg border bg-card", compact ? "p-3" : "p-4")}
+      className={cn(formClass(bare, "min-w-0 space-y-4"), !bare && (compact ? "p-3" : "p-4"))}
       onSubmit={onSubmit}
     >
-      <p className="text-sm font-medium">Create prescription</p>
+      {!bare ? <p className="text-sm font-medium">Create prescription</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={draft.source === "inventory" ? "default" : "outline"}
+          onClick={() => setDraft((current) => ({ ...emptyDraftItem(), source: "inventory" }))}
+        >
+          From clinic stock
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={draft.source === "external" ? "default" : "outline"}
+          onClick={() => setDraft((current) => ({ ...emptyDraftItem(), source: "external" }))}
+        >
+          External / note only
+        </Button>
+      </div>
       <div className={cn("grid gap-3", compact ? "grid-cols-1" : "md:grid-cols-2")}>
-        <MedicineSelect
-          id="rx_medicine"
-          value={draft.medicine}
-          onValueChange={(medicine) =>
-            setDraft((current) => ({
-              ...current,
-              medicine,
-              medicineLabel: labelFor(medicine),
-              medicineUnit: unitFor(medicine),
-            }))
-          }
-        />
-        <div className="space-y-2">
-          <Label htmlFor="rx_quantity">
-            Quantity
-            {draft.medicineUnit
-              ? ` (${formatMedicineUnit(draft.medicineUnit, draft.quantity || 2)})`
-              : ""}
-          </Label>
-          <Input
-            id="rx_quantity"
-            inputMode="numeric"
-            value={draft.quantity}
-            onChange={(event) => setDraft((current) => ({ ...current, quantity: event.target.value }))}
+        {draft.source === "inventory" ? (
+          <MedicineSelect
+            id="rx_medicine"
+            value={draft.medicine}
+            onValueChange={(medicine) =>
+              setDraft((current) => ({
+                ...current,
+                medicine,
+                medicineLabel: labelFor(medicine),
+                medicineUnit: unitFor(medicine),
+              }))
+            }
           />
-        </div>
+        ) : (
+          <div className="space-y-2">
+            <Label htmlFor="rx_medicine_name">Medicine name</Label>
+            <Input
+              id="rx_medicine_name"
+              value={draft.medicineName}
+              placeholder="Name as written for the patient"
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, medicineName: event.target.value }))
+              }
+            />
+            <p className="text-xs text-muted-foreground">Use when the medicine is not in clinic inventory.</p>
+          </div>
+        )}
+        {draft.source === "inventory" ? (
+          <div className="space-y-2">
+            <Label htmlFor="rx_quantity">
+              Quantity
+              {draft.medicineUnit
+                ? ` (${formatMedicineUnit(draft.medicineUnit, draft.quantity || 2)})`
+                : ""}
+            </Label>
+            <Input
+              id="rx_quantity"
+              inputMode="numeric"
+              value={draft.quantity}
+              onChange={(event) => setDraft((current) => ({ ...current, quantity: event.target.value }))}
+            />
+          </div>
+        ) : null}
         <div className="space-y-2">
           <Label htmlFor="rx_dosage">Dosage</Label>
           <Input
@@ -802,7 +845,7 @@ function CreatePrescriptionForm({
         <ul className="space-y-2 text-sm">
           {items.map((line, index) => (
             <li
-              key={`${line.medicine}-${index}`}
+              key={`${line.source}-${line.medicine || line.medicineName}-${index}`}
               className={cn(
                 "gap-2 rounded-md border px-3 py-2",
                 compact ? "flex flex-col" : "flex items-center justify-between",
@@ -816,9 +859,11 @@ function CreatePrescriptionForm({
                     duration_days: line.durationDays ? Number(line.durationDays) : 0,
                     quantity: line.quantity,
                   },
-                  line.medicineLabel || labelFor(line.medicine),
-                  line.medicineUnit || unitFor(line.medicine),
+                  line.medicineLabel ||
+                    (line.source === "inventory" ? labelFor(line.medicine) : line.medicineName),
+                  line.medicineUnit || (line.source === "inventory" ? unitFor(line.medicine) : ""),
                 )}
+                {line.source === "external" ? " · external" : ""}
               </span>
               <Button
                 type="button"
@@ -844,7 +889,7 @@ function CreatePrescriptionForm({
   );
 }
 
-function CreateLabOrderForm({ encounterId }: { encounterId: string }) {
+function CreateLabOrderForm({ encounterId, bare = false }: { encounterId: string; bare?: boolean }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [labTest, setLabTest] = useState("");
@@ -883,8 +928,8 @@ function CreateLabOrderForm({ encounterId }: { encounterId: string }) {
   }
 
   return (
-    <form className="space-y-3 rounded-lg border bg-card p-4" onSubmit={onSubmit}>
-      <p className="text-sm font-medium">Create lab order</p>
+    <form className={formClass(bare)} onSubmit={onSubmit}>
+      {!bare ? <p className="text-sm font-medium">Create lab order</p> : null}
       <LabTestSelect id="lab_test" value={labTest} onValueChange={setLabTest} />
       <Button type="submit" disabled={mutation.isPending}>
         {mutation.isPending ? "Creating…" : "Create lab order"}

@@ -1,3 +1,4 @@
+from apps.reports.services.ccr import build_ccr_report
 from apps.reports.services.clinical import build_clinical_report
 from apps.reports.services.common import clinic_meta, parse_report_range
 from apps.reports.services.financial import build_financial_report
@@ -8,6 +9,7 @@ from apps.reports.services.summary import build_summary_report
 from apps.reports.services.trends import build_trends_report
 
 __all__ = [
+    "build_ccr_report",
     "build_clinical_report",
     "build_financial_report",
     "build_laboratory_report",

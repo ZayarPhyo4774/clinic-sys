@@ -4,6 +4,7 @@ import { ArrowDownToLine, ArrowUpFromLine, Package, PackagePlus, SlidersHorizont
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
+import { AssignedBranchSelect } from "@/components/assigned-branch-select";
 import { MedicineSelect } from "@/components/entity-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,10 @@ import {
   ReceiveStockForm,
   StockOutForm,
 } from "@/features/pharmacy/pharmacy-writes";
+import { BulkStockReceive } from "@/features/pharmacy/bulk-stock-receive";
+import { GrnPanel } from "@/features/pharmacy/grn-panel";
+import { StockTransferForm } from "@/features/pharmacy/stock-transfer-form";
+import { useAuth } from "@/features/auth/auth-provider";
 import { useResourceList } from "@/hooks/use-resource-list";
 import { withQuery } from "@/lib/api/client";
 import type { Medicine } from "@/lib/api/types";
@@ -63,8 +68,9 @@ function SelectedMedicineSummary({ medicine }: { medicine: Medicine }) {
 }
 
 export function PharmacyStockMovement() {
+  const { branchId } = useAuth();
   const [medicineId, setMedicineId] = useState("");
-  const [movementTab, setMovementTab] = useState("receive");
+  const [movementTab, setMovementTab] = useState("bulk");
 
   const medicinesQuery = useResourceList<Medicine>(
     "medicines",
@@ -81,33 +87,59 @@ export function PharmacyStockMovement() {
       <Card className="shadow-premium-sm">
         <CardHeader>
           <CardTitle>Stock movement</CardTitle>
-          <CardDescription>Select a medicine, then record stock in, stock out, adjustments, or receive a new batch.</CardDescription>
+          <CardDescription>
+            Receive stock in bulk, post GRNs to the store, transfer to clinic branches, or adjust individual medicines.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <MedicineSelect
-            id="pharmacy_stock_medicine"
-            value={medicineId}
-            onValueChange={(value) => {
-              setMedicineId(value);
-              setMovementTab("receive");
-            }}
-          />
+        <CardContent className="space-y-4">
+          <AssignedBranchSelect id="stock_movement_branch" />
+          {!branchId ? (
+            <p className="text-sm text-destructive">Select a branch in the sidebar before recording stock movements.</p>
+          ) : null}
         </CardContent>
       </Card>
 
-      {!medicineId ? (
-        <div className="rounded-xl border border-dashed px-6 py-12 text-center shadow-premium-sm">
-          <PackagePlus className="mx-auto size-8 text-muted-foreground" aria-hidden="true" />
-          <p className="mt-3 text-sm font-medium">Choose a medicine to begin</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Stock movements are recorded against a medicine batch and appear in the inventory ledger.
-          </p>
-        </div>
-      ) : (
-        <div key={medicineId} className="space-y-6">
-          {selectedMedicine ? <SelectedMedicineSummary medicine={selectedMedicine} /> : null}
+      <Tabs value={movementTab} onValueChange={setMovementTab}>
+        <TabsList className="h-auto w-full flex-wrap justify-start gap-1">
+          <TabsTrigger value="bulk">Bulk receive</TabsTrigger>
+          <TabsTrigger value="grn">GRN</TabsTrigger>
+          <TabsTrigger value="transfer">Store transfer</TabsTrigger>
+          <TabsTrigger value="single">Single medicine</TabsTrigger>
+        </TabsList>
 
-          <Tabs value={movementTab} onValueChange={setMovementTab}>
+        <TabsContent value="bulk" className="mt-6">
+          <BulkStockReceive />
+        </TabsContent>
+
+        <TabsContent value="grn" className="mt-6">
+          <GrnPanel />
+        </TabsContent>
+
+        <TabsContent value="transfer" className="mt-6">
+          <StockTransferForm />
+        </TabsContent>
+
+        <TabsContent value="single" className="mt-6 space-y-6">
+          <Card className="shadow-premium-sm">
+            <CardContent className="pt-6">
+              <MedicineSelect
+                id="pharmacy_stock_medicine"
+                value={medicineId}
+                onValueChange={setMedicineId}
+              />
+            </CardContent>
+          </Card>
+
+          {!medicineId ? (
+            <div className="rounded-xl border border-dashed px-6 py-12 text-center shadow-premium-sm">
+              <PackagePlus className="mx-auto size-8 text-muted-foreground" aria-hidden="true" />
+              <p className="mt-3 text-sm font-medium">Choose a medicine for single-item stock actions</p>
+            </div>
+          ) : (
+            <div key={medicineId} className="space-y-6">
+              {selectedMedicine ? <SelectedMedicineSummary medicine={selectedMedicine} /> : null}
+
+              <Tabs defaultValue="receive">
             <TabsList className="h-auto w-full flex-wrap justify-start gap-1">
               <TabsTrigger value="receive" className="gap-2">
                 <PackagePlus className="size-4" aria-hidden="true" />
@@ -160,9 +192,11 @@ export function PharmacyStockMovement() {
                 <AdjustStockForm medicineId={medicineId} embedded />
               </div>
             </TabsContent>
-          </Tabs>
-        </div>
-      )}
+              </Tabs>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

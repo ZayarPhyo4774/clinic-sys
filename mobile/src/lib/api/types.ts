@@ -37,6 +37,8 @@ export type Patient = {
   patient_number: string;
   full_name: string;
   date_of_birth: string;
+  dob_is_approximate: boolean;
+  age: number;
   sex: string;
   is_active: boolean;
 };

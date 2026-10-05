@@ -24,9 +24,18 @@ class Encounter(models.Model):
         OPEN = "open", "Open"
         COMPLETED = "completed", "Completed"
 
+    class Phase(models.TextChoices):
+        TRIAGE = "triage", "Triage"
+        CONSULTATION = "consultation", "Consultation"
+
     TRANSITIONS = {
         Status.OPEN: {Status.COMPLETED},
         Status.COMPLETED: set(),
+    }
+
+    PHASE_TRANSITIONS = {
+        Phase.TRIAGE: {Phase.CONSULTATION},
+        Phase.CONSULTATION: set(),
     }
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -36,6 +45,7 @@ class Encounter(models.Model):
     patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="encounters")
     doctor = models.ForeignKey("clinics.DoctorProfile", on_delete=models.PROTECT, related_name="encounters")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
+    phase = models.CharField(max_length=20, choices=Phase.choices, default=Phase.CONSULTATION)
     started_at = models.DateTimeField(default=timezone.now)
     started_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -70,7 +80,11 @@ class Encounter(models.Model):
         if self._state.adding:
             if self.status != self.Status.OPEN:
                 raise ValidationError({"status": "New encounters start open."})
-            if self.appointment.status != Appointment.Status.IN_CONSULTATION:
+            appointment = Appointment.objects.get(pk=self.appointment_id)
+            if self.phase == self.Phase.TRIAGE:
+                if appointment.status != Appointment.Status.IN_QUEUE:
+                    raise ValidationError({"appointment": "The patient must be in the queue before triage."})
+            elif appointment.status != Appointment.Status.IN_CONSULTATION:
                 raise ValidationError({"appointment": "Start the consultation before the encounter."})
         if self.started_at and self.started_at > timezone.now():
             raise ValidationError({"started_at": "Start time cannot be in the future."})
@@ -90,6 +104,8 @@ class Encounter(models.Model):
                 for field in ("appointment_id", "patient_id", "doctor_id", "branch_id", "clinic_id", "started_at", "started_by_id"):
                     if getattr(previous, field) != getattr(self, field):
                         raise ValidationError("Encounter attribution cannot change.")
+                if previous.phase != self.phase and self.phase not in self.PHASE_TRANSITIONS[previous.phase]:
+                    raise ValidationError({"phase": "Encounter phase cannot change."})
                 if self.status != previous.status and self.status not in self.TRANSITIONS[previous.status]:
                     raise ValidationError({"status": "This status change is not allowed."})
                 if previous.status != self.status and self.status == self.Status.COMPLETED:
@@ -105,6 +121,54 @@ class Encounter(models.Model):
 
     def __str__(self) -> str:
         return self.status
+
+
+class EncounterConsultationMeta(models.Model):
+    class PatientStatus(models.TextChoices):
+        NEW = "new", "New"
+        OLD = "old", "Old"
+
+    encounter = models.OneToOneField(Encounter, on_delete=models.CASCADE, related_name="consultation_meta")
+    patient_status = models.CharField(max_length=10, choices=PatientStatus.choices, blank=True)
+    is_plw = models.BooleanField(default=False)
+    is_disabled = models.BooleanField(default=False)
+    disability_type = models.ForeignKey(
+        "clinics.ClinicDisabilityType",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="consultation_entries",
+    )
+    referral_made = models.BooleanField(default=False)
+    referral_cause = models.TextField(blank=True)
+    treatment = models.TextField(blank=True)
+    remark = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="updated_consultation_meta",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        if self.is_disabled and self.disability_type_id is None:
+            raise ValidationError({"disability_type": "Select a disability type when disability is marked."})
+        if self.disability_type_id and not self.is_disabled:
+            raise ValidationError({"is_disabled": "Enable disability before selecting a type."})
+        if self.disability_type_id and self.disability_type.clinic_id != self.encounter.clinic_id:
+            raise ValidationError({"disability_type": "Disability type must belong to this clinic."})
+        if self.referral_made and not (self.referral_cause or "").strip():
+            pass
+        self.referral_cause = (self.referral_cause or "").strip()
+        self.treatment = (self.treatment or "").strip()
+        self.remark = (self.remark or "").strip()
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class ClinicalFact(models.Model):

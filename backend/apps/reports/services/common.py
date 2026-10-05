@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -14,7 +15,13 @@ def parse_iso_date(value: str, field: str) -> date:
         raise DRFValidationError({field: "Use YYYY-MM-DD."}) from exc
 
 
-def parse_report_range(params, *, max_days: int = 366) -> tuple[date, date]:
+def clinic_localdate(clinic_id) -> date:
+    clinic = Clinic.objects.filter(id=clinic_id).only("timezone").first()
+    zone_name = clinic.timezone if clinic and clinic.timezone else "UTC"
+    return timezone.now().astimezone(ZoneInfo(zone_name)).date()
+
+
+def parse_report_range(params, *, max_days: int = 366, clinic_id=None) -> tuple[date, date]:
     single = (params.get("date") or "").strip()
     start_raw = (params.get("from") or "").strip()
     end_raw = (params.get("to") or "").strip()
@@ -34,15 +41,17 @@ def parse_report_range(params, *, max_days: int = 366) -> tuple[date, date]:
             raise DRFValidationError({"to": f"Date range cannot exceed {max_days} days."})
         return start, end
 
-    today = timezone.localdate()
+    today = clinic_localdate(clinic_id) if clinic_id is not None else timezone.localdate()
     return today, today
 
 
 def clinic_meta(clinic_id) -> dict:
-    clinic = Clinic.objects.filter(id=clinic_id).only("currency", "locale").first()
+    clinic = Clinic.objects.filter(id=clinic_id).only("name", "currency", "locale", "timezone").first()
     return {
+        "clinic_name": clinic.name if clinic else "",
         "currency": clinic.currency if clinic else "USD",
         "locale": clinic.locale if clinic else "en",
+        "timezone": clinic.timezone if clinic else "UTC",
     }
 
 

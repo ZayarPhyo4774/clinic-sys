@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { queueActionLabels, queueActionsForStatus, queueActionsNeedConfirm } from "@/features/queue/actions";
+import {
+  canOpenTriage,
+  queueActionLabels,
+  queueActionsForRole,
+  queueActionsForStatus,
+  queueActionsNeedConfirm,
+} from "@/features/queue/actions";
 
 describe("queue actions", () => {
   it("offers call and skip while waiting", () => {
@@ -21,10 +27,23 @@ describe("queue actions", () => {
 
   it("uses readable action labels", () => {
     expect(queueActionLabels.call).toBe("Call patient");
+    expect(queueActionLabels.start).toBe("Start consultation");
     expect(queueActionLabels.requeue).toBe("Requeue");
   });
 
   it("requires confirmation before skip", () => {
     expect(queueActionsNeedConfirm).toEqual(["skip"]);
+  });
+
+  it("hides doctor queue actions without appointments.update", () => {
+    expect(queueActionsForRole("called", ["appointments.view"])).toEqual([]);
+    expect(queueActionsForRole("called", ["appointments.update"])).toEqual(["start", "skip"]);
+  });
+
+  it("allows triage link while waiting with triage or vitals permission", () => {
+    expect(canOpenTriage({ status: "waiting" }, ["triage.start"])).toBe(true);
+    expect(canOpenTriage({ status: "waiting" }, ["vitals.record"])).toBe(true);
+    expect(canOpenTriage({ status: "waiting" }, ["appointments.update"])).toBe(false);
+    expect(canOpenTriage({ status: "called" }, ["triage.start"])).toBe(false);
   });
 });

@@ -114,6 +114,9 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_URL = "/media/"
+PATIENT_DOCUMENT_MAX_BYTES = env.int("PATIENT_DOCUMENT_MAX_BYTES", default=10 * 1024 * 1024)
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REDIS_URL = env("REDIS_URL")

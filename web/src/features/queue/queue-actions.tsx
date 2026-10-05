@@ -1,59 +1,66 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { StartConsultationButton } from "@/features/consultation/start-consultation-button";
+import { allowed } from "@/features/access/navigation";
+import { useAuth } from "@/features/auth/auth-provider";
 import {
+  canOpenTriage,
   queueActionLabels,
-  queueActionsForStatus,
+  queueActionsForRole,
   queueActionsNeedConfirm,
   type QueueAction,
 } from "@/features/queue/actions";
+import { refreshQueueQueries } from "@/features/queue/queue-cache";
 import { api } from "@/lib/api/client";
 import type { QueueEntry } from "@/lib/api/types";
 import { isOnline } from "@/offline/connectivity/network";
 import { requireOnlineMutation } from "@/offline/sync/policy";
 
-export function QueueActions({
-  entryId,
-  status,
-  appointmentId,
-  appointmentStatus,
-  compact = false,
-}: {
-  entryId: string;
-  status: string;
-  appointmentId?: string;
-  appointmentStatus?: string;
-  compact?: boolean;
-}) {
+export function QueueActions({ entry, compact = false }: { entry: QueueEntry; compact?: boolean }) {
+  const { account } = useAuth();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [message, setMessage] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<QueueAction | null>(null);
-  const actions = queueActionsForStatus(status);
+  const permissions = account?.permissions ?? [];
+  const actions = queueActionsForRole(entry.status, permissions);
+  const showTriage = canOpenTriage(entry, permissions);
+  const canOpenConsultation = Boolean(
+    account &&
+      allowed(account.permissions, "encounters.view") &&
+      entry.encounter &&
+      (entry.status === "in_service" || entry.appointment_status === "in_consultation"),
+  );
+
   const mutation = useMutation({
     mutationFn: (action: QueueAction) => {
       requireOnlineMutation(`queue.${action}`, isOnline());
-      return api<QueueEntry>(`/queue-entries/${entryId}/${action}/`, { method: "POST", body: "{}" });
+      return api<QueueEntry>(`/queue-entries/${entry.id}/${action}/`, { method: "POST", body: "{}" });
     },
-    onSuccess: async (_data, action) => {
+    onSuccess: async (data, action) => {
       setMessage(null);
       setConfirmAction(null);
       toast.success(queueActionLabels[action]);
-      await queryClient.invalidateQueries({ queryKey: ["queue"] });
+      await refreshQueueQueries(queryClient);
       await queryClient.invalidateQueries({ queryKey: ["appointments"] });
       await queryClient.invalidateQueries({ queryKey: ["encounters"] });
+      if (action === "start" && data.encounter) {
+        router.push(`/consultation/${data.encounter}`);
+      }
     },
     onError: (error) => {
       setMessage(error instanceof Error ? error.message : "The queue action was rejected.");
     },
   });
 
-  if (actions.length === 0) {
+  if (actions.length === 0 && !showTriage && !canOpenConsultation) {
     return compact ? null : <span className="text-xs text-muted-foreground">No actions</span>;
   }
 
@@ -72,6 +79,11 @@ export function QueueActions({
       onClick={(event) => event.stopPropagation()}
     >
       <div className="flex flex-wrap gap-2">
+        {showTriage ? (
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/triage/${entry.id}`}>Record vitals</Link>
+          </Button>
+        ) : null}
         {actions.map((action) => (
           <Button
             key={action}
@@ -85,13 +97,10 @@ export function QueueActions({
             {queueActionLabels[action]}
           </Button>
         ))}
-        {appointmentId && appointmentStatus ? (
-          <StartConsultationButton
-            appointmentId={appointmentId}
-            appointmentStatus={appointmentStatus}
-            size="sm"
-            variant={status === "in_service" ? "default" : "outline"}
-          />
+        {canOpenConsultation && entry.encounter ? (
+          <Button asChild size="sm" variant={entry.status === "in_service" ? "default" : "outline"}>
+            <Link href={`/consultation/${entry.encounter}`}>Open consultation</Link>
+          </Button>
         ) : null}
       </div>
       {message ? (

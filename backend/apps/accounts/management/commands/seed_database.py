@@ -9,9 +9,10 @@ from apps.accounts.default_roles import ensure_permission_catalog, install_defau
 from apps.accounts.models import Role, User, UserRole
 from apps.appointments.models import DoctorSchedule
 from apps.billing.models import PaymentMethod
+from apps.clinics.ccr_services import ensure_ccr_settings, ensure_default_disability_types
 from apps.clinics.models import Branch, Clinic, Staff
 from apps.clinics.services import ensure_doctor_profile
-from apps.patients.models import Patient
+from apps.patients.models import Patient, PatientNumberSequence
 from apps.pharmacy.seed import seed_pharmacy
 from testing import PASSWORD
 
@@ -61,6 +62,15 @@ class Command(BaseCommand):
             code=BRANCH_CODE,
             defaults={"name": "Main Branch"},
         )
+
+        ensure_default_disability_types(clinic)
+        ccr_settings = ensure_ccr_settings(clinic)
+        ccr_settings.project_name = "EWARS"
+        ccr_settings.state_region = "Magway"
+        ccr_settings.township_mimu = "Salin"
+        ccr_settings.village_mimu = "Demo Village"
+        ccr_settings.consultant_position = "Field Medical Officer"
+        ccr_settings.save()
 
         permissions_created = ensure_permission_catalog()
         role_result = install_default_roles(clinic, update_existing=True)
@@ -140,6 +150,13 @@ class Command(BaseCommand):
                 "created_by": operator,
             },
         )
+        sequence, _ = PatientNumberSequence.objects.get_or_create(
+            clinic=clinic,
+            defaults={"last_value": int(patient.patient_number)},
+        )
+        if sequence.last_value < int(patient.patient_number):
+            sequence.last_value = int(patient.patient_number)
+            sequence.save(update_fields=["last_value", "updated_at"])
 
         pharmacy_result = seed_pharmacy(clinic=clinic, branch=branch, created_by=operator)
 

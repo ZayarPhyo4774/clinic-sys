@@ -4,6 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+VITAL_UNIT_OPTIONS: dict[str, tuple[str, ...]] = {
+    "temperature": ("°C", "°F"),
+    "pulse": ("bpm",),
+    "respiratory_rate": ("/min",),
+    "spo2": ("%",),
+    "systolic": ("mmHg",),
+    "diastolic": ("mmHg",),
+    "weight_kg": ("kg", "lb"),
+    "height_cm": ("cm", "in"),
+}
+
 VITAL_UNIT_FIELDS: tuple[dict[str, Any], ...] = (
     {
         "field": "temperature",
@@ -66,5 +77,31 @@ VITAL_UNIT_FIELDS: tuple[dict[str, Any], ...] = (
 )
 
 
-def vital_units_payload() -> dict[str, list[dict[str, Any]]]:
-    return {"fields": list(VITAL_UNIT_FIELDS)}
+def _default_units_map() -> dict[str, str]:
+    return {row["field"]: row["unit"] for row in VITAL_UNIT_FIELDS}
+
+
+def resolve_vital_units(unit_overrides: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    overrides = unit_overrides or {}
+    resolved: list[dict[str, Any]] = []
+    for row in VITAL_UNIT_FIELDS:
+        field = row["field"]
+        unit = overrides.get(field, row["unit"])
+        allowed = VITAL_UNIT_OPTIONS.get(field, (row["unit"],))
+        if unit not in allowed:
+            unit = row["unit"]
+        resolved.append({**row, "unit": unit})
+    return resolved
+
+
+def vital_units_payload(clinic=None) -> dict[str, Any]:
+    overrides: dict[str, str] = {}
+    if clinic is not None:
+        from apps.clinics.vital_settings_services import get_clinic_vital_unit_overrides
+
+        overrides = get_clinic_vital_unit_overrides(clinic)
+    return {
+        "fields": resolve_vital_units(overrides),
+        "options": {field: list(options) for field, options in VITAL_UNIT_OPTIONS.items()},
+        "defaults": _default_units_map(),
+    }
